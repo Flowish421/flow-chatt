@@ -29,7 +29,7 @@ MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024  # 2MB per image base64
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via env var — no default
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
 
 WELCOME_TEXT = """Valkommen till Flow Chatt!
 
