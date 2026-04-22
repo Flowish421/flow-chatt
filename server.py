@@ -23,7 +23,10 @@ MAX_BODY = 5 * 1024 * 1024  # 5MB max for image uploads
 MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024  # 2MB per image base64
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
+ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
 import re
+import hashlib
 
 # --- Database ---
 
@@ -109,18 +112,43 @@ def check_rate_limit(ip):
         rate_limits[ip].append(now_t)
         return True
 
+# --- Online tracking ---
+online_users = {}  # username -> {"last_seen": timestamp, "ip": str, "channel": str}
+online_lock = threading.Lock()
+
+def touch_online(username, ip="", channel=""):
+    with online_lock:
+        online_users[username] = {
+            "last_seen": time.time(),
+            "ip": ip,
+            "channel": channel,
+        }
+
+def get_online(timeout=120):
+    """Users seen in last 2 minutes."""
+    now_t = time.time()
+    with online_lock:
+        return {u: info for u, info in online_users.items() if now_t - info["last_seen"] < timeout}
+
+# --- Admin sessions ---
+admin_sessions = set()  # set of session tokens
+
+def check_admin(headers):
+    token = headers.get("X-Admin-Token", "")
+    return token in admin_sessions
+
 # --- SSE Clients ---
 
-sse_clients = []  # list of (queue, channel_filter)
+sse_clients = []  # list of (queue, channel_filter, username)
 sse_lock = threading.Lock()
 
 def broadcast(event_data):
     """Send event to all SSE clients."""
     with sse_lock:
         dead = []
-        for i, (q, _) in enumerate(sse_clients):
+        for i, entry in enumerate(sse_clients):
             try:
-                q.put_nowait(event_data)
+                entry[0].put_nowait(event_data)
             except:
                 dead.append(i)
         for i in reversed(dead):
@@ -188,6 +216,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         # Static files
         if path == "/" or path == "/chat.html":
             self.send_html("static/chat.html")
+            return
+
+        if path == "/admin" or path == "/admin.html":
+            self.send_html("static/admin.html")
             return
 
         # API: health
@@ -261,11 +293,14 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             q = Queue()
+            sse_user = params.get("user", ["anonymous"])[0][:20]
+            client_ip = self.client_address[0] if self.client_address else ""
+            touch_online(sse_user, client_ip, "connected")
             with sse_lock:
                 if len(sse_clients) >= MAX_SSE_CLIENTS:
                     self.send_error(503)
                     return
-                sse_clients.append((q, None))
+                sse_clients.append((q, None, sse_user))
 
             try:
                 # Send keepalive immediately
@@ -285,7 +320,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 pass
             finally:
                 with sse_lock:
-                    sse_clients[:] = [(cq, cf) for cq, cf in sse_clients if cq is not q]
+                    sse_clients[:] = [c for c in sse_clients if c[0] is not q]
             return
 
         self.send_error(404)
@@ -312,6 +347,87 @@ class ChatHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             self.send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
+
+        # API: admin login — POST /api/admin/login { username, password }
+        if path == "/api/admin/login":
+            u = body.get("username", "")
+            p = body.get("password", "")
+            if u == ADMIN_USER and p == ADMIN_PASS:
+                session = uuid.uuid4().hex
+                admin_sessions.add(session)
+                self.send_json({"ok": True, "token": session})
+            else:
+                self.send_json({"ok": False, "error": "Fel losenord"}, 401)
+            return
+
+        # API: admin dashboard data — POST /api/admin/dashboard
+        if path == "/api/admin/dashboard":
+            if not check_admin(self.headers):
+                self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            db = get_db()
+            users = [dict(r) for r in db.execute("SELECT username, created_at FROM users ORDER BY created_at DESC").fetchall()]
+            channels = [dict(r) for r in db.execute("SELECT * FROM channels ORDER BY created_at DESC").fetchall()]
+            msg_count = db.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
+            # Per-user stats
+            user_stats = {}
+            for row in db.execute("SELECT author, COUNT(*) as c FROM messages GROUP BY author ORDER BY c DESC").fetchall():
+                user_stats[row["author"]] = row["c"]
+            # Recent messages (last 50)
+            recent = [dict(r) for r in db.execute("SELECT id, channel, author, content, created_at FROM messages ORDER BY created_at DESC LIMIT 50").fetchall()]
+            db.close()
+
+            online = get_online()
+            sse_count = len(sse_clients)
+
+            self.send_json({
+                "ok": True,
+                "users": users,
+                "channels": channels,
+                "total_messages": msg_count,
+                "user_stats": user_stats,
+                "recent_messages": recent,
+                "online": {u: {"last_seen": info["last_seen"], "ip": info["ip"], "channel": info["channel"]} for u, info in online.items()},
+                "sse_connections": sse_count,
+            })
+            return
+
+        # API: admin delete user — POST /api/admin/delete-user { username }
+        if path == "/api/admin/delete-user":
+            if not check_admin(self.headers):
+                self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            uname = body.get("username", "")
+            if not uname:
+                self.send_json({"ok": False, "error": "username required"}, 400)
+                return
+            db = get_db()
+            db.execute("DELETE FROM users WHERE username = ?", (uname,))
+            db.execute("DELETE FROM messages WHERE author = ?", (uname,))
+            db.execute("DELETE FROM reactions WHERE author = ?", (uname,))
+            db.commit()
+            db.close()
+            self.send_json({"ok": True, "deleted": uname})
+            return
+
+        # API: admin ban (delete user + messages) — POST /api/admin/kick-user { username }
+        if path == "/api/admin/kick-user":
+            if not check_admin(self.headers):
+                self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            uname = body.get("username", "")
+            if not uname:
+                self.send_json({"ok": False, "error": "username required"}, 400)
+                return
+            db = get_db()
+            db.execute("DELETE FROM users WHERE username = ?", (uname,))
+            db.commit()
+            db.close()
+            # Remove from online
+            with online_lock:
+                online_users.pop(uname, None)
+            self.send_json({"ok": True, "kicked": uname})
             return
 
         # API: register username — POST /api/register { username }
@@ -397,6 +513,9 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             if not content and attachments:
                 content = "[bild]" if len(attachments) == 1 else f"[{len(attachments)} bilder]"
+
+            # Track online
+            touch_online(author, client_ip, channel)
 
             msg_id = str(uuid.uuid4())
             ts = now()

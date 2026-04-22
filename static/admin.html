@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-Frame-Options" content="DENY">
+<title>Flow Chatt — Admin</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0c10; --surface: #12151a; --elevated: #1a1e26;
+  --border: #252a35; --accent: #4f8ff7; --green: #34d399;
+  --red: #f87171; --amber: #fbbf24; --text: #e6edf3;
+  --muted: #8b949e; --dim: #505a6e;
+  --mono: "Courier New", monospace;
+}
+body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; }
+
+/* Login */
+#login {
+  display: flex; align-items: center; justify-content: center;
+  height: 100vh;
+}
+#login.hidden { display: none; }
+#login-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 32px; text-align: center; width: 320px;
+}
+#login-box h1 { color: var(--red); font-size: 18px; margin-bottom: 16px; }
+#login-box input {
+  width: 100%; background: var(--elevated); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font-family: var(--mono);
+  font-size: 13px; padding: 10px; margin-bottom: 10px; outline: none;
+}
+#login-box input:focus { border-color: var(--accent); }
+#login-box button {
+  width: 100%; background: var(--red); border: none; border-radius: 6px;
+  color: #000; font-weight: 700; font-size: 13px; padding: 10px; cursor: pointer;
+}
+#login-box button:hover { opacity: 0.85; }
+#login-err { color: var(--red); font-size: 11px; margin-top: 8px; min-height: 16px; }
+
+/* Dashboard */
+#dash { display: none; padding: 20px; max-width: 1200px; margin: 0 auto; }
+#dash.on { display: block; }
+h1 { color: var(--red); font-size: 16px; margin-bottom: 16px; }
+h2 { color: var(--accent); font-size: 13px; margin: 20px 0 8px; letter-spacing: 1px; text-transform: uppercase; }
+.stats-row {
+  display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px 20px; min-width: 140px; flex: 1;
+}
+.stat-card .num { font-size: 28px; font-weight: 700; color: var(--accent); }
+.stat-card .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+table {
+  width: 100%; border-collapse: collapse; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+th { background: var(--elevated); color: var(--muted); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 8px 12px; text-align: left; }
+td { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; }
+tr:hover td { background: var(--elevated); }
+.online-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.online-dot.on { background: var(--green); }
+.online-dot.off { background: var(--dim); }
+.btn-sm {
+  background: none; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--muted); font-family: var(--mono); font-size: 10px;
+  padding: 3px 8px; cursor: pointer; margin-right: 4px;
+}
+.btn-sm:hover { color: var(--text); border-color: var(--muted); }
+.btn-sm.danger { color: var(--red); }
+.btn-sm.danger:hover { border-color: var(--red); }
+#refresh-btn {
+  background: var(--accent); border: none; border-radius: 6px;
+  color: #000; font-weight: 600; font-size: 11px;
+  padding: 6px 14px; cursor: pointer; margin-left: 12px;
+}
+.header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.msg-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.timestamp { color: var(--dim); font-size: 10px; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div id="login-box">
+    <h1>ADMIN</h1>
+    <input id="admin-user" type="text" placeholder="Anvandarnamn" autocomplete="off">
+    <input id="admin-pass" type="password" placeholder="Losenord" onkeydown="if(event.key==='Enter')doAdminLogin()">
+    <button onclick="doAdminLogin()">Logga in</button>
+    <div id="login-err"></div>
+  </div>
+</div>
+
+<div id="dash">
+  <div class="header-row">
+    <h1>Flow Chatt Admin</h1>
+    <div>
+      <button id="refresh-btn" onclick="loadDashboard()">Uppdatera</button>
+      <button class="btn-sm" onclick="logout()">Logga ut</button>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card"><div class="num" id="s-users">-</div><div class="label">Registrerade</div></div>
+    <div class="stat-card"><div class="num" id="s-online">-</div><div class="label">Online</div></div>
+    <div class="stat-card"><div class="num" id="s-sse">-</div><div class="label">SSE-kopplingar</div></div>
+    <div class="stat-card"><div class="num" id="s-msgs">-</div><div class="label">Meddelanden</div></div>
+    <div class="stat-card"><div class="num" id="s-channels">-</div><div class="label">Kanaler</div></div>
+  </div>
+
+  <h2>Online nu</h2>
+  <table id="t-online"><thead><tr><th>Status</th><th>Namn</th><th>IP</th><th>Kanal</th><th>Senast sedd</th></tr></thead><tbody></tbody></table>
+
+  <h2>Alla anvandare</h2>
+  <table id="t-users"><thead><tr><th>Namn</th><th>Registrerad</th><th>Meddelanden</th><th>Status</th><th>Atgarder</th></tr></thead><tbody></tbody></table>
+
+  <h2>Kanaler</h2>
+  <table id="t-channels"><thead><tr><th>Namn</th><th>Visningsnamn</th><th>Skapad av</th><th>Skapad</th></tr></thead><tbody></tbody></table>
+
+  <h2>Senaste meddelanden</h2>
+  <table id="t-msgs"><thead><tr><th>Tid</th><th>Kanal</th><th>Fran</th><th>Meddelande</th></tr></thead><tbody></tbody></table>
+</div>
+
+<script>
+let adminToken = sessionStorage.getItem('admin-token') || '';
+
+async function doAdminLogin() {
+  const user = document.getElementById('admin-user').value.trim();
+  const pass = document.getElementById('admin-pass').value;
+  const err = document.getElementById('login-err');
+
+  try {
+    const res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    }).then(r => r.json());
+
+    if (res.ok) {
+      adminToken = res.token;
+      sessionStorage.setItem('admin-token', adminToken);
+      document.getElementById('login').classList.add('hidden');
+      document.getElementById('dash').classList.add('on');
+      loadDashboard();
+    } else {
+      err.textContent = res.error || 'Fel';
+    }
+  } catch(e) {
+    err.textContent = 'Serverfel';
+  }
+}
+
+function logout() {
+  adminToken = '';
+  sessionStorage.removeItem('admin-token');
+  location.reload();
+}
+
+async function loadDashboard() {
+  try {
+    const res = await fetch('/api/admin/dashboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+    }).then(r => r.json());
+
+    if (!res.ok) {
+      if (res.error === 'unauthorized') logout();
+      return;
+    }
+
+    const online = res.online || {};
+    const onlineNames = new Set(Object.keys(online));
+
+    // Stats
+    document.getElementById('s-users').textContent = res.users.length;
+    document.getElementById('s-online').textContent = onlineNames.size;
+    document.getElementById('s-sse').textContent = res.sse_connections;
+    document.getElementById('s-msgs').textContent = res.total_messages;
+    document.getElementById('s-channels').textContent = res.channels.length;
+
+    // Online table
+    const onTbody = document.querySelector('#t-online tbody');
+    if (onlineNames.size === 0) {
+      onTbody.innerHTML = '<tr><td colspan="5" style="color:var(--dim)">Ingen online</td></tr>';
+    } else {
+      onTbody.innerHTML = Object.entries(online).map(([name, info]) => {
+        const ago = Math.round((Date.now()/1000) - info.last_seen);
+        const agoStr = ago < 60 ? ago + 's sedan' : Math.round(ago/60) + 'min sedan';
+        return `<tr>
+          <td><span class="online-dot on"></span></td>
+          <td>${esc(name)}</td>
+          <td>${esc(info.ip)}</td>
+          <td>${esc(info.channel)}</td>
+          <td class="timestamp">${agoStr}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Users table
+    const uTbody = document.querySelector('#t-users tbody');
+    uTbody.innerHTML = res.users.map(u => {
+      const isOn = onlineNames.has(u.username);
+      const msgs = res.user_stats[u.username] || 0;
+      return `<tr>
+        <td><span class="online-dot ${isOn ? 'on' : 'off'}"></span>${esc(u.username)}</td>
+        <td class="timestamp">${fmtTime(u.created_at)}</td>
+        <td>${msgs}</td>
+        <td>${isOn ? '<span style="color:var(--green)">Online</span>' : '<span style="color:var(--dim)">Offline</span>'}</td>
+        <td>
+          <button class="btn-sm" onclick="kickUser('${esc(u.username)}')">Kicka</button>
+          <button class="btn-sm danger" onclick="deleteUser('${esc(u.username)}')">Radera</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    // Channels table
+    const cTbody = document.querySelector('#t-channels tbody');
+    cTbody.innerHTML = res.channels.map(c => `<tr>
+      <td>#${esc(c.name)}</td>
+      <td>${esc(c.display_name || '')}</td>
+      <td>${esc(c.created_by || '?')}</td>
+      <td class="timestamp">${fmtTime(c.created_at)}</td>
+    </tr>`).join('');
+
+    // Recent messages
+    const mTbody = document.querySelector('#t-msgs tbody');
+    mTbody.innerHTML = res.recent_messages.map(m => `<tr>
+      <td class="timestamp">${fmtTime(m.created_at)}</td>
+      <td>#${esc(m.channel)}</td>
+      <td>${esc(m.author)}</td>
+      <td class="msg-preview">${esc(m.content)}</td>
+    </tr>`).join('');
+
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function kickUser(name) {
+  if (!confirm('Kicka ' + name + '? (Tar bort konto, behaller meddelanden)')) return;
+  await fetch('/api/admin/kick-user', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+    body: JSON.stringify({ username: name }),
+  });
+  loadDashboard();
+}
+
+async function deleteUser(name) {
+  if (!confirm('RADERA ' + name + '? Tar bort konto + ALLA meddelanden + reaktioner!')) return;
+  await fetch('/api/admin/delete-user', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+    body: JSON.stringify({ username: name }),
+  });
+  loadDashboard();
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch(e) { return iso.substring(0, 16); }
+}
+
+// Auto-login if token saved
+if (adminToken) {
+  document.getElementById('login').classList.add('hidden');
+  document.getElementById('dash').classList.add('on');
+  loadDashboard();
+}
+
+// Auto-refresh every 10s
+setInterval(() => {
+  if (adminToken) loadDashboard();
+}, 10000);
+</script>
+</body>
+</html>

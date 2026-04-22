@@ -751,7 +751,7 @@ function openLightbox(src) {
 // === SSE ===
 function connectSSE() {
   if (eventSource) eventSource.close();
-  eventSource = new EventSource('/api/events');
+  eventSource = new EventSource('/api/events?user=' + encodeURIComponent(username));
   eventSource.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
