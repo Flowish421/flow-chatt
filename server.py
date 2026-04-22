@@ -19,7 +19,11 @@ from datetime import datetime, timezone
 DB_PATH = os.environ.get("CHAT_DB", "chat.db")
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-MAX_BODY = 10 * 1024 * 1024  # 10MB max for image uploads
+MAX_BODY = 5 * 1024 * 1024  # 5MB max for image uploads
+MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024  # 2MB per image base64
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
+CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
+import re
 
 # --- Database ---
 
@@ -122,13 +126,16 @@ from queue import Queue, Empty
 
 class ChatHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # Quiet logs
+        # Log requests but skip SSE keepalives
+        if args and '/api/events' not in str(args[0]):
+            import sys
+            sys.stderr.write(f"{self.client_address[0]} - {format % args}\n")
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Content-Length", len(body))
@@ -161,7 +168,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.end_headers()
@@ -243,7 +250,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
             self.end_headers()
 
             q = Queue()
@@ -286,24 +293,38 @@ class ChatHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self.send_json({"ok": False, "error": "bad content-length"}, 400)
+            return
         if content_length > MAX_BODY:
-            self.send_json({"ok": False, "error": "payload too large (max 10MB)"}, 413)
+            self.send_json({"ok": False, "error": "payload too large (max 5MB)"}, 413)
             return
         try:
             body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             self.send_json({"ok": False, "error": "invalid JSON"}, 400)
             return
 
         # API: send message
         if path.startswith("/api/channel/") and path.endswith("/message"):
             parts = path.split("/")
-            channel = parts[3][:50]  # limit channel name length
-            content = body.get("content", "").strip()[:5000]  # limit message length
-            author = body.get("author", "anonymous").strip()[:20]  # limit username
+            channel = parts[3][:50]
+            if not re.match(r'^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$', channel):
+                self.send_json({"ok": False, "error": "invalid channel name"}, 400)
+                return
+            content = body.get("content", "").strip()[:5000]
+            author = body.get("author", "anonymous").strip()[:20]
             role = body.get("role", "user")
-            attachments = body.get("attachments", [])[:10]  # max 10 attachments
+            if role not in ("user", "assistant"):
+                role = "user"
+            attachments = body.get("attachments", [])[:5]
+            # Validate attachment sizes
+            for att in attachments:
+                if len(att.get("dataUrl", "")) > MAX_ATTACHMENT_SIZE:
+                    self.send_json({"ok": False, "error": "attachment too large (max 2MB)"}, 400)
+                    return
 
             if not content and not attachments:
                 self.send_json({"ok": False, "error": "empty message"}, 400)
@@ -411,18 +432,25 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "action": action, "reactions": react_list})
             return
 
-        # API: delete channel
+        # API: delete channel (requires admin token if set)
         if path.startswith("/api/channel/") and path.count("/") == 3:
             parts = path.split("/")
             channel = parts[3]
             if channel == "general":
                 self.send_json({"ok": False, "error": "cannot delete general"}, 400)
                 return
+            if ADMIN_TOKEN:
+                auth = self.headers.get("Authorization", "")
+                if auth != f"Bearer {ADMIN_TOKEN}":
+                    self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                    return
             db = get_db()
-            db.execute("DELETE FROM messages WHERE channel = ?", (channel,))
-            db.execute("DELETE FROM channels WHERE name = ?", (channel,))
-            db.commit()
-            db.close()
+            try:
+                db.execute("DELETE FROM messages WHERE channel = ?", (channel,))
+                db.execute("DELETE FROM channels WHERE name = ?", (channel,))
+                db.commit()
+            finally:
+                db.close()
             self.send_json({"ok": True})
             return
 

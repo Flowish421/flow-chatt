@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self';">
+<meta http-equiv="X-Frame-Options" content="DENY">
 <title>Flow Chatt</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -458,7 +460,10 @@ async function startChat() {
   document.getElementById('user-display').textContent = username;
 
   const params = new URLSearchParams(location.search);
-  if (params.get('channel')) currentChannel = params.get('channel');
+  const urlCh = params.get('channel');
+  if (urlCh && /^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$/.test(urlCh)) {
+    currentChannel = urlCh;
+  }
 
   await loadChannels();
   switchChannel(currentChannel);
@@ -490,9 +495,9 @@ async function loadChannels() {
     list.innerHTML = channels.map(c => {
       const active = c.name === currentChannel ? ' active' : '';
       const del = c.name !== 'general'
-        ? `<button class="ch-del" onclick="event.stopPropagation();delChannel('${esc(c.name)}')" title="Ta bort">&#215;</button>`
+        ? `<button class="ch-del" onclick="event.stopPropagation();delChannel('${escAttr(c.name)}')" title="Ta bort">&#215;</button>`
         : '';
-      return `<div class="ch-row${active}" onclick="switchChannel('${esc(c.name)}')">
+      return `<div class="ch-row${active}" onclick="switchChannel('${escAttr(c.name)}')">
         <span class="hash">#</span>
         <span class="ch-name">${esc(c.display_name || c.name)}</span>
         ${del}
@@ -595,7 +600,7 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
     const imgWrap = document.createElement('div');
     imgWrap.className = 'msg-images';
     attachments.forEach(a => {
-      if (a.dataUrl && a.dataUrl.startsWith('data:image')) {
+      if (a.dataUrl && /^data:image\/(png|jpeg|gif|webp|bmp);/.test(a.dataUrl)) {
         const img = document.createElement('img');
         img.src = a.dataUrl;
         img.loading = 'lazy';
@@ -732,12 +737,20 @@ function onFiles(fileList) {
 function renderPreview() {
   const el = document.getElementById('attach-preview');
   el.classList.toggle('has-files', pendingFiles.length > 0);
-  el.innerHTML = pendingFiles.map((f, i) =>
-    `<div class="ap-thumb">
-      <img src="${f.dataUrl}">
-      <button class="ap-rm" onclick="removePending(${i})">x</button>
-    </div>`
-  ).join('');
+  el.innerHTML = '';
+  pendingFiles.forEach((f, i) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'ap-thumb';
+    const img = document.createElement('img');
+    img.src = f.dataUrl;
+    const btn = document.createElement('button');
+    btn.className = 'ap-rm';
+    btn.textContent = 'x';
+    btn.onclick = () => removePending(i);
+    thumb.appendChild(img);
+    thumb.appendChild(btn);
+    el.appendChild(thumb);
+  });
 }
 
 function removePending(i) {
@@ -786,6 +799,9 @@ function setupDragDrop() {
 
 // === Send ===
 async function send() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text && !pendingFiles.length) return;
@@ -833,10 +849,7 @@ document.getElementById('msg-input').addEventListener('input', function() {
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
 
-// Request notification permission
-if ('Notification' in window && Notification.permission === 'default') {
-  Notification.requestPermission();
-}
+// Notification permission requested on first send (not on load)
 
 // === Emoji Picker ===
 function toggleEmojiPicker(event) {
@@ -896,12 +909,19 @@ function esc(s) {
   d.textContent = s || '';
   return d.innerHTML;
 }
+function escAttr(s) {
+  return esc(s).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+}
 function fmtContent(s) {
   if (!s) return '';
   let h = esc(s);
   h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  h = h.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent)">$1</a>');
+  // URL auto-linking with safe attribute escaping
+  h = h.replace(/(https?:\/\/[^\s<]+)/g, function(url) {
+    const safeUrl = url.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="color:var(--accent)">' + url + '</a>';
+  });
   return h;
 }
 
