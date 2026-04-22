@@ -1121,6 +1121,39 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
             return
 
+        # API: request access to private room — notifies the owner via SSE
+        if path.startswith("/api/channel/") and path.endswith("/request-access"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                room = db.execute("SELECT * FROM channels WHERE name = ?", (room_name,)).fetchone()
+                if not room:
+                    self.send_error(404)
+                    return
+                owner = room["owner"]
+            finally:
+                db.close()
+            # Broadcast to owner
+            broadcast({
+                "event_type": "access_request",
+                "room": room_name,
+                "display_name": room["display_name"] or room_name,
+                "from": author,
+                "owner": owner,
+            })
+            self.send_json({"ok": True, "message": "Forfragan skickad till agaren"})
+            return
+
         # API: join a room
         if path.startswith("/api/channel/") and path.endswith("/join"):
             parts = path.split("/")

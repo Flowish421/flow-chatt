@@ -456,6 +456,18 @@ body {
   <div id="system-bar" style="display:none;padding:12px 20px;background:var(--bg-surface);border-bottom:1px solid var(--border);text-align:center">
     <span style="color:var(--text-muted);font-family:var(--font-mono);font-size:11px">Det har rummet ar skrivskyddat</span>
   </div>
+  <div id="locked-view" style="display:none;flex:1;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:40px">
+    <div style="font-size:48px">&#128274;</div>
+    <div style="font-family:var(--font-mono);font-size:16px;color:var(--text-primary)">Privat rum</div>
+    <div style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);text-align:center;max-width:300px">Du har inte tillgang till det har rummet. Skicka en forfragan till agaren eller anvand en inbjudningslank.</div>
+    <button id="request-btn" onclick="sendAccessRequest()" style="background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:700;font-size:14px;padding:12px 28px;cursor:pointer">&#128233; Begär tillgang</button>
+    <div id="request-status" style="font-family:var(--font-mono);font-size:11px;color:var(--green);min-height:20px"></div>
+    <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-top:8px">Eller klistra in en inbjudningslank:</div>
+    <div style="display:flex;gap:6px;width:100%;max-width:300px">
+      <input id="invite-code-input" type="text" placeholder="Klistra in lank eller kod..." style="flex:1;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:8px 10px;outline:none">
+      <button onclick="submitInviteCode()" style="background:var(--green);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:8px 14px;cursor:pointer">Ga med</button>
+    </div>
+  </div>
   <div id="messages"></div>
   <div id="attach-preview"></div>
   <div id="emoji-input-bar">
@@ -752,12 +764,7 @@ function makeChannelRow(c, type) {
   if (!c.is_member && type !== 'pin') row.style.opacity = isLocked ? '0.6' : '0.5';
   row.dataset.channel = c.name;
 
-  if (isLocked) {
-    // Locked private room — click to request access
-    row.addEventListener('click', () => requestAccess(c.name, c.display_name || c.name));
-  } else {
-    row.addEventListener('click', () => switchChannel(c.name));
-  }
+  row.addEventListener('click', () => switchChannel(c.name));
 
   const icon = document.createElement('span');
   icon.className = 'hash';
@@ -780,8 +787,60 @@ function makeChannelRow(c, type) {
   return row;
 }
 
-function requestAccess(roomName, displayName) {
-  alert('Rummet "' + displayName + '" ar privat.\n\nBe agaren bjuda in dig, eller anvand en inbjudningslank.');
+async function sendAccessRequest() {
+  const btn = document.getElementById('request-btn');
+  const status = document.getElementById('request-status');
+  btn.disabled = true;
+  btn.textContent = 'Skickar...';
+  try {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/request-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    if (res.ok) {
+      status.textContent = '\u2705 Forfragan skickad! Agaren far en notis.';
+      status.style.color = 'var(--green)';
+      btn.textContent = '\u2705 Skickad';
+    } else {
+      status.textContent = res.error || 'Fel';
+      status.style.color = 'var(--red)';
+      btn.disabled = false;
+      btn.textContent = '\ud83d\udce9 Be om tillgang';
+    }
+  } catch(e) {
+    status.textContent = 'Serverfel';
+    status.style.color = 'var(--red)';
+    btn.disabled = false;
+    btn.textContent = '\ud83d\udce9 Be om tillgang';
+  }
+}
+
+async function submitInviteCode() {
+  const input = document.getElementById('invite-code-input');
+  let code = input.value.trim();
+  if (!code) return;
+  // Extract code from URL if pasted
+  const match = code.match(/[?&]invite=([a-f0-9]+)/);
+  if (match) code = match[1];
+  // Or just use raw code
+  code = code.replace(/[^a-f0-9]/g, '');
+  if (!code) return;
+  try {
+    const res = await fetch('/api/invite/' + encodeURIComponent(code) + '/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    if (res.ok) {
+      input.value = '';
+      await loadChannels();
+      switchChannel(res.room);
+    } else {
+      document.getElementById('request-status').textContent = res.error || 'Ogiltig kod';
+      document.getElementById('request-status').style.color = 'var(--red)';
+    }
+  } catch(e) {}
 }
 
 async function switchChannel(name) {
@@ -796,23 +855,34 @@ async function switchChannel(name) {
   const isMember = ch.is_member || false;
   const isOwner = ch.user_role === 'owner';
 
+  const isLocked = ch.locked && !isMember;
+
   document.getElementById('header-name').textContent = (vis === 'private' ? '\ud83d\udd12 ' : '# ') + (ch.display_name || name);
   document.getElementById('header-topic').textContent = ch.topic || '';
 
   // Determine access level
-  if (vis === 'system') currentRoomAccess = 'system';
+  if (isLocked) currentRoomAccess = 'locked';
+  else if (vis === 'system') currentRoomAccess = 'system';
   else if (isOwner) currentRoomAccess = 'owner';
   else if (isMember) currentRoomAccess = 'write';
   else currentRoomAccess = 'read';
 
   // Show/hide UI based on access
+  document.getElementById('locked-view').style.display = (currentRoomAccess === 'locked') ? 'flex' : 'none';
+  document.getElementById('messages').style.display = (currentRoomAccess === 'locked') ? 'none' : '';
   document.getElementById('join-bar').style.display = (currentRoomAccess === 'read') ? '' : 'none';
   document.getElementById('system-bar').style.display = (currentRoomAccess === 'system') ? '' : 'none';
+  document.getElementById('request-status').textContent = '';
   document.getElementById('btn-settings').style.display = (currentRoomAccess === 'owner') ? '' : 'none';
   document.getElementById('btn-leave').style.display = (currentRoomAccess === 'write' && name !== 'allmant') ? '' : 'none';
 
   // Show/hide input area
   const canWrite = (currentRoomAccess === 'write' || currentRoomAccess === 'owner');
+  if (currentRoomAccess === 'locked') {
+    document.getElementById('input-area').style.display = 'none';
+    document.getElementById('emoji-input-bar').style.display = 'none';
+    return; // Don't load messages for locked rooms
+  }
   document.getElementById('input-area').style.display = canWrite ? '' : 'none';
   document.getElementById('emoji-input-bar').style.display = canWrite ? '' : 'none';
   document.getElementById('attach-preview').style.display = 'none';
@@ -1050,6 +1120,17 @@ function connectSSE() {
     try {
       const d = JSON.parse(e.data);
       // Reaction update
+      // Access request — show to room owner
+      if (d.event_type === 'access_request' && d.owner === username) {
+        if (confirm(d.from + ' vill ga med i "' + (d.display_name || d.room) + '".\n\nGodkann?')) {
+          fetch('/api/channel/' + encodeURIComponent(d.room) + '/invite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ author: username, token: userToken, username: d.from }),
+          });
+        }
+        return;
+      }
       // Room events (invite/kick)
       if (d.event_type === 'invited' || d.event_type === 'kicked') {
         handleRoomEvent(d);
