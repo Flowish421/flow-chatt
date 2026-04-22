@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: cortex-chat
+    runtime: python
+    buildCommand: echo "No build needed"
+    startCommand: python server.py
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: CHAT_DB
+        value: /tmp/chat.db
+    plan: free
