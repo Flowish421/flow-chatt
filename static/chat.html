@@ -114,6 +114,27 @@ body {
   letter-spacing: 1px; text-transform: uppercase;
 }
 
+/* Delete button */
+.msg-del {
+  display: none; margin-left: 8px; cursor: pointer; font-size: 12px;
+  color: var(--text-muted); opacity: 0.5;
+}
+.msg:hover .msg-del { display: inline; }
+.msg-del:hover { opacity: 1; color: var(--red); }
+
+/* Ephemeral messages */
+.msg-ephemeral {
+  background: rgba(79,143,247,0.06);
+  border-left: 2px solid var(--amber);
+  padding-left: 10px;
+}
+.eph-badge {
+  display: inline-block; background: var(--amber); color: #000;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  padding: 1px 5px; border-radius: 8px; margin-right: 6px;
+  vertical-align: middle;
+}
+
 /* Attachments */
 .msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .msg-images img {
@@ -382,10 +403,17 @@ body {
     <button onclick="insertEmoji('😭')" title="grat">😭</button>
     <button onclick="insertEmoji('🙏')" title="tack">🙏</button>
   </div>
+  <div id="ephemeral-bar" style="display:none;padding:4px 20px;background:var(--bg-surface);font-family:var(--font-mono);font-size:11px;color:var(--amber);display:flex;align-items:center;gap:8px">
+    <span>&#128164; Forsvinner om</span>
+    <input id="eph-seconds" type="range" min="1" max="30" value="5" style="width:100px;accent-color:var(--amber)">
+    <span id="eph-label">5s</span>
+    <button onclick="toggleEphemeral()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;margin-left:auto" title="Stang av">&#10005;</button>
+  </div>
   <div id="input-area">
     <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Bifoga bild">📎</button>
     <input type="file" id="file-input" multiple accept="image/*" style="display:none" onchange="onFiles(this.files)">
     <button id="emoji-btn" onclick="toggleEmojiPicker(event)" title="Emoji" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);padding:9px 10px;cursor:pointer;font-size:16px;line-height:1">😀</button>
+    <button id="eph-btn" onclick="toggleEphemeral()" title="Forsvinnande meddelande" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);padding:9px 10px;cursor:pointer;font-size:16px;line-height:1">&#128164;</button>
     <textarea id="msg-input" placeholder="Skriv ett meddelande..." rows="1"
       onkeydown="handleKey(event)"></textarea>
     <button id="send-btn" onclick="send()">Skicka</button>
@@ -456,6 +484,7 @@ let eventSource = null;
 const seenIds = new Set();
 let lastDateShown = '';
 let pendingFiles = []; // [{dataUrl, name, size}]
+let ephemeralMode = false;
 let emojiPickerMode = null; // null | 'input' | {msgId}
 const msgElements = new Map(); // msgId -> DOM element
 
@@ -739,21 +768,31 @@ function addDateSeparator(ts) {
   }
 }
 
-function appendMsg(author, content, role, timestamp, attachments, msgId, reactions) {
+function appendMsg(author, content, role, timestamp, attachments, msgId, reactions, ephemeral) {
   const el = document.getElementById('messages');
   const time = timestamp ? timestamp.substring(11, 16) : '';
   const div = document.createElement('div');
   div.className = 'msg role-' + role;
+  if (ephemeral) div.classList.add('msg-ephemeral');
   if (msgId) {
     div.dataset.msgId = msgId;
     msgElements.set(msgId, div);
   }
 
   let html = `<span class="time">${esc(time)}</span><span class="author">${esc(author)}</span>`;
+  if (ephemeral) html += `<span class="eph-badge">${ephemeral}s</span>`;
   if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
     html += `<span class="content">${fmtContent(content)}</span>`;
   }
+  // Delete button (own messages only, not ephemeral)
+  if (author === username && msgId && !ephemeral && !msgId.startsWith('tmp-')) {
+    html += `<span class="msg-del" title="Radera">&#128465;</span>`;
+  }
   div.innerHTML = html;
+
+  // Wire delete button click
+  const delBtn = div.querySelector('.msg-del');
+  if (delBtn) delBtn.addEventListener('click', () => deleteMessage(msgId));
 
   // Render attachments
   if (attachments && attachments.length) {
@@ -772,14 +811,49 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
     if (imgWrap.children.length) div.appendChild(imgWrap);
   }
 
-  // Reactions row
-  const reactRow = document.createElement('div');
-  reactRow.className = 'msg-reactions';
-  if (msgId) reactRow.id = 'reacts-' + msgId;
-  renderReactions(reactRow, reactions || [], msgId);
-  div.appendChild(reactRow);
+  // Reactions row (not for ephemeral)
+  if (!ephemeral) {
+    const reactRow = document.createElement('div');
+    reactRow.className = 'msg-reactions';
+    if (msgId) reactRow.id = 'reacts-' + msgId;
+    renderReactions(reactRow, reactions || [], msgId);
+    div.appendChild(reactRow);
+  }
 
   el.appendChild(div);
+
+  // Ephemeral auto-delete with countdown
+  if (ephemeral) {
+    let remaining = ephemeral;
+    const badge = div.querySelector('.eph-badge');
+    const interval = setInterval(() => {
+      remaining--;
+      if (badge) badge.textContent = remaining + 's';
+      if (remaining <= 0) {
+        clearInterval(interval);
+        div.style.transition = 'opacity 0.5s, max-height 0.5s';
+        div.style.opacity = '0';
+        div.style.maxHeight = '0';
+        div.style.overflow = 'hidden';
+        setTimeout(() => div.remove(), 600);
+      }
+    }, 1000);
+  }
+}
+
+async function deleteMessage(msgId) {
+  if (!msgId) return;
+  try {
+    const res = await fetch('/api/message/' + encodeURIComponent(msgId) + '/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    if (res.ok) {
+      const el = msgElements.get(msgId);
+      if (el) el.remove();
+    }
+  } catch(e) {}
 }
 
 function renderReactions(container, reactions, msgId) {
@@ -873,6 +947,12 @@ function connectSSE() {
         handleRoomEvent(d);
         return;
       }
+      // Message deleted
+      if (d.event_type === 'message_deleted' && d.id) {
+        const el = msgElements.get(d.id);
+        if (el) { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }
+        return;
+      }
       if (d.event_type === 'reaction' && d.message_id) {
         const container = document.getElementById('reacts-' + d.message_id);
         if (container) renderReactions(container, d.reactions || [], d.message_id);
@@ -884,7 +964,7 @@ function connectSSE() {
       if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
       if (d.id) seenIds.add(d.id);
       addDateSeparator(d.created_at);
-      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, []);
+      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0);
       scrollBottom();
       if (document.hidden && Notification.permission === 'granted') {
         new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
@@ -991,22 +1071,27 @@ async function send() {
   pendingFiles = [];
   renderPreview();
 
+  const ephSec = ephemeralMode ? parseInt(document.getElementById('eph-seconds').value) : 0;
+
   // Optimistic render
   const tempId = 'tmp-' + Date.now();
   addDateSeparator(new Date().toISOString());
-  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments, tempId, []);
+  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments, tempId, [], ephSec);
   scrollBottom();
 
   try {
+    const payload = {
+      content: text,
+      author: username,
+      token: userToken,
+      attachments: attachments.length ? attachments : undefined,
+    };
+    if (ephSec) payload.ephemeral = ephSec;
+
     const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: text,
-        author: username,
-        token: userToken,
-        attachments: attachments.length ? attachments : undefined,
-      }),
+      body: JSON.stringify(payload),
     }).then(r => r.json());
     if (res.id) seenIds.add(res.id);
     if (!res.ok) appendSystem('Fel: ' + (res.error || 'unknown'));
@@ -1120,6 +1205,27 @@ function fmtContent(s) {
 
 // Disable drag on page (except file drop zone)
 document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.preventDefault(); });
+
+// === Ephemeral Mode ===
+function toggleEphemeral() {
+  ephemeralMode = !ephemeralMode;
+  const bar = document.getElementById('ephemeral-bar');
+  const btn = document.getElementById('eph-btn');
+  bar.style.display = ephemeralMode ? 'flex' : 'none';
+  btn.style.color = ephemeralMode ? 'var(--amber)' : 'var(--text-muted)';
+  btn.style.borderColor = ephemeralMode ? 'var(--amber)' : 'var(--border)';
+  if (ephemeralMode) {
+    document.getElementById('msg-input').placeholder = 'Forsvinnande meddelande...';
+  } else {
+    document.getElementById('msg-input').placeholder = 'Skriv ett meddelande...';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const slider = document.getElementById('eph-seconds');
+  const label = document.getElementById('eph-label');
+  if (slider) slider.addEventListener('input', () => { label.textContent = slider.value + 's'; });
+});
 
 // === Room Management ===
 function showCreateModal() {

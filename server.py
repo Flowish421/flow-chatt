@@ -852,6 +852,27 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             touch_online(author, client_ip, channel)
 
+            # Ephemeral mode: message is NOT saved, only broadcast + auto-expires
+            ephemeral = body.get("ephemeral", 0)
+            if ephemeral:
+                ephemeral = max(1, min(30, int(ephemeral)))  # 1-30 seconds
+                msg_id = "eph-" + uuid.uuid4().hex[:12]
+                ts = now()
+                broadcast_data = {
+                    "event_type": "chat_message",
+                    "id": msg_id,
+                    "channel": channel,
+                    "author": author,
+                    "content": content,
+                    "role": role,
+                    "ephemeral": ephemeral,
+                    "attachments": attachments,  # Send full data for ephemeral (not saved)
+                    "created_at": ts,
+                }
+                broadcast(broadcast_data, channel)
+                self.send_json({"ok": True, "id": msg_id, "channel": channel, "ephemeral": ephemeral})
+                return
+
             msg_id = str(uuid.uuid4())
             ts = now()
             att_json = json.dumps(attachments) if attachments else "[]"
@@ -867,7 +888,6 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
 
-            # Broadcast WITHOUT full base64 data to avoid memory spike across SSE threads
             broadcast_data = {
                 "event_type": "chat_message",
                 "id": msg_id,
@@ -882,6 +902,43 @@ class ChatHandler(BaseHTTPRequestHandler):
             broadcast(broadcast_data, channel)
 
             self.send_json({"ok": True, "id": msg_id, "channel": channel})
+            return
+
+        # API: delete own message — POST /api/message/:id/delete { author, token }
+        if path.startswith("/api/message/") and path.endswith("/delete"):
+            parts = path.split("/")
+            message_id = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                msg = db.execute("SELECT author, channel FROM messages WHERE id = ?", (message_id,)).fetchone()
+                if not msg:
+                    self.send_json({"ok": False, "error": "meddelandet finns inte"}, 404)
+                    return
+                # Only the author or room owner can delete
+                is_author = msg["author"] == author
+                is_room_owner = False
+                owner_row = db.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (msg["channel"], author)).fetchone()
+                if owner_row and owner_row["role"] == "owner":
+                    is_room_owner = True
+                if not is_author and not is_room_owner:
+                    self.send_json({"ok": False, "error": "du kan bara radera dina egna meddelanden"}, 403)
+                    return
+                db.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+                db.execute("DELETE FROM reactions WHERE message_id = ?", (message_id,))
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "message_deleted", "id": message_id, "channel": msg["channel"]}, msg["channel"])
+            self.send_json({"ok": True})
             return
 
         # API: create channel (requires token)
