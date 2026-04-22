@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://img.youtube.com; connect-src 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self'; connect-src 'self';">
 <meta http-equiv="X-Frame-Options" content="DENY">
 <title>Flow Chatt</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -414,6 +414,12 @@ body {
   </div>
 </div>
 
+<div id="intro-overlay" style="display:none;position:fixed;inset:0;background:#000;z-index:600;align-items:center;justify-content:center;flex-direction:column">
+  <video id="intro-vid" autoplay playsinline style="max-width:400px;width:90%;max-height:85vh;border-radius:16px;box-shadow:0 0 60px rgba(79,143,247,0.3)">
+    <source src="/intro.mp4" type="video/mp4">
+  </video>
+  <button onclick="finishIntro()" style="margin-top:16px;background:none;border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:rgba(255,255,255,0.5);font-family:var(--font-mono);font-size:12px;padding:8px 20px;cursor:pointer">Skippa</button>
+</div>
 
 <div id="sidebar">
   <h2>Rum / Kanaler</h2>
@@ -1268,27 +1274,25 @@ document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.
 
 // === Intro Video ===
 function showIntroVideo() {
-  // Open YouTube video directly in popup — no extra clicks
-  const popup = window.open(
-    'https://www.youtube.com/shorts/z1LsBYV8H1o',
-    'flow-intro',
-    'width=400,height=720,menubar=no,toolbar=no,location=no,status=no'
-  );
+  const overlay = document.getElementById('intro-overlay');
+  overlay.style.display = 'flex';
+  const vid = document.getElementById('intro-vid');
+  vid.play().catch(() => {});
+  // When video ends -> enter chat
+  vid.addEventListener('ended', () => finishIntro(), { once: true });
+}
 
-  // Auto-close popup + enter chat after 30s (video length)
-  const check = setInterval(() => {
-    if (popup && popup.closed) {
-      clearInterval(check);
-      clearTimeout(timer);
-      startChat();
-    }
-  }, 500);
-
-  const timer = setTimeout(() => {
-    clearInterval(check);
-    if (popup && !popup.closed) popup.close();
+function finishIntro() {
+  const overlay = document.getElementById('intro-overlay');
+  const vid = document.getElementById('intro-vid');
+  vid.pause();
+  overlay.style.transition = 'opacity 0.6s';
+  overlay.style.opacity = '0';
+  setTimeout(() => {
+    overlay.style.display = 'none';
+    overlay.style.opacity = '1';
     startChat();
-  }, 30000);
+  }, 600);
 }
 
 // === Ephemeral Mode ===

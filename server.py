@@ -434,6 +434,23 @@ class ChatHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404)
 
+    def send_static_file(self, path, content_type):
+        try:
+            resolved = Path(path).resolve()
+            allowed = Path("static").resolve()
+            if not str(resolved).startswith(str(allowed)):
+                self.send_error(403)
+                return
+            content = resolved.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", len(content))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_error(404)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
@@ -460,6 +477,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         if path == "/admin" or path == "/admin.html":
             self.send_html("static/admin.html")
+            return
+
+        if path == "/intro.mp4":
+            self.send_static_file("static/intro.mp4", "video/mp4")
             return
 
         # API: health
