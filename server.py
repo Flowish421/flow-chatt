@@ -628,7 +628,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                         self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
                         self.wfile.flush()
                     except Empty:
-                        self.wfile.write(b": ping\n\n")
+                        self.wfile.write(b"data: {\"event_type\":\"ping\"}\n\n")
                         self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
@@ -1140,14 +1140,17 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if not room:
                     self.send_error(404)
                     return
-                owner = room["owner"]
+                owner = str(room["owner"] or "")
+                display = str(room["display_name"] or room_name)
             finally:
                 db.close()
-            # Broadcast to owner
+            # Broadcast to ALL clients — owner filters client-side
+            import sys
+            sys.stderr.write(f"ACCESS_REQUEST: {author} -> {room_name} (owner: {owner}), SSE clients: {len(sse_clients)}\n")
             broadcast({
                 "event_type": "access_request",
                 "room": room_name,
-                "display_name": room["display_name"] or room_name,
+                "display_name": display,
                 "from": author,
                 "owner": owner,
             })

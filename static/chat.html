@@ -1114,9 +1114,11 @@ function openLightbox(src) {
 
 // === SSE ===
 function connectSSE() {
-  if (eventSource) eventSource.close();
+  if (eventSource) { try { eventSource.close(); } catch(e) {} }
   eventSource = new EventSource('/api/events?user=' + encodeURIComponent(username));
+  window._sseAlive = Date.now();
   eventSource.onmessage = (e) => {
+    window._sseAlive = Date.now();
     try {
       const d = JSON.parse(e.data);
       // Reaction update
@@ -1160,7 +1162,17 @@ function connectSSE() {
       }
     } catch(err) {}
   };
-  eventSource.onerror = () => console.log('SSE reconnecting...');
+  eventSource.onerror = () => {
+    console.log('SSE error, will auto-reconnect...');
+  };
+  // Keepalive check — reconnect if no data in 30s (server pings every 15s)
+  clearInterval(window._sseCheck);
+  window._sseCheck = setInterval(() => {
+    if (Date.now() - (window._sseAlive || 0) > 30000) {
+      console.log('SSE stale, reconnecting...');
+      connectSSE();
+    }
+  }, 10000);
 }
 
 // === Files / Images ===
