@@ -493,7 +493,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "available": row is None, "username": uname})
             return
 
-        # API: send message
+        # API: send message (requires valid token)
         if path.startswith("/api/channel/") and path.endswith("/message"):
             parts = path.split("/")
             channel = parts[3][:50]
@@ -502,9 +502,24 @@ class ChatHandler(BaseHTTPRequestHandler):
                 return
             content = body.get("content", "").strip()[:5000]
             author = body.get("author", "anonymous").strip()[:20]
-            role = body.get("role", "user")
-            if role not in ("user", "assistant"):
-                role = "user"
+            token = body.get("token", "").strip()
+
+            # Verify token matches author — prevents impersonation via inspect element
+            if token:
+                db_check = get_db()
+                valid = db_check.execute(
+                    "SELECT username FROM users WHERE username = ? AND token = ?",
+                    (author, token)
+                ).fetchone()
+                db_check.close()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+            else:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+
+            role = "user"
             attachments = body.get("attachments", [])[:5]
             # Validate attachment sizes
             for att in attachments:
@@ -552,7 +567,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "id": msg_id, "channel": channel})
             return
 
-        # API: create channel
+        # API: create channel (requires token)
         if path == "/api/channel":
             name = body.get("name", "").strip().lower().replace(" ", "-")
             if not name:
@@ -561,6 +576,20 @@ class ChatHandler(BaseHTTPRequestHandler):
             display = body.get("display_name", name)
             topic = body.get("topic", "")
             creator = body.get("created_by", "anonymous")
+            token = body.get("token", "").strip()
+
+            # Verify token
+            if token:
+                db_v = get_db()
+                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (creator, token)).fetchone()
+                db_v.close()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+            else:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+
             ts = now()
 
             db = get_db()
@@ -573,15 +602,28 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "channel": name})
             return
 
-        # API: react to a message — POST /api/message/:id/react { emoji, author }
+        # API: react to a message — POST /api/message/:id/react { emoji, author, token }
         if path.startswith("/api/message/") and path.endswith("/react"):
             parts = path.split("/")
             message_id = parts[3]
             emoji = body.get("emoji", "").strip()
             author = body.get("author", "anonymous").strip()
+            token = body.get("token", "").strip()
 
             if not emoji:
                 self.send_json({"ok": False, "error": "emoji required"}, 400)
+                return
+
+            # Verify token
+            if token:
+                db_v = get_db()
+                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                db_v.close()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+            else:
+                self.send_json({"ok": False, "error": "token required"}, 401)
                 return
 
             db = get_db()

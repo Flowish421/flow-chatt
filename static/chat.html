@@ -588,7 +588,7 @@ async function newChannel() {
   await fetch('/api/channel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: clean, display_name: name.trim(), created_by: username }),
+    body: JSON.stringify({ name: clean, display_name: name.trim(), created_by: username, token: userToken }),
   });
   await loadChannels();
   switchChannel(clean);
@@ -710,7 +710,7 @@ async function react(msgId, emoji) {
     const res = await fetch('/api/message/' + msgId + '/react', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emoji, author: username }),
+      body: JSON.stringify({ emoji, author: username, token: userToken }),
     }).then(r => r.json());
     if (res.ok) {
       const container = document.getElementById('reacts-' + msgId);
@@ -887,6 +887,7 @@ async function send() {
       body: JSON.stringify({
         content: text,
         author: username,
+        token: userToken,
         attachments: attachments.length ? attachments : undefined,
       }),
     }).then(r => r.json());
@@ -985,6 +986,52 @@ function fmtContent(s) {
   });
   return h;
 }
+
+// === Anti-tampering ===
+// Disable right-click context menu
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+// Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U
+document.addEventListener('keydown', e => {
+  if (e.key === 'F12') { e.preventDefault(); return; }
+  if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) { e.preventDefault(); return; }
+  if (e.ctrlKey && (e.key === 'U' || e.key === 'u')) { e.preventDefault(); return; }
+});
+
+// Detect DevTools open (debugger trap)
+(function antiDebug() {
+  const threshold = 160;
+  setInterval(() => {
+    const before = performance.now();
+    debugger;
+    const after = performance.now();
+    if (after - before > threshold) {
+      // DevTools detected — clear session
+      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0c10;color:#f87171;font-family:monospace;font-size:18px;text-align:center;padding:20px">Manipulation detected.<br>Session terminated.</div>';
+      localStorage.removeItem('cortex-chat-user');
+      localStorage.removeItem('cortex-chat-token');
+      username = '';
+      userToken = '';
+      if (eventSource) eventSource.close();
+    }
+  }, 2000);
+})();
+
+// Freeze critical globals — prevent console overrides
+try {
+  Object.defineProperty(window, 'username', { get: () => username, set: () => {}, configurable: false });
+  Object.defineProperty(window, 'userToken', { get: () => userToken, set: () => {}, configurable: false });
+} catch(e) {}
+
+// Disable drag on page (except file drop zone)
+document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.preventDefault(); });
+
+// Disable copy of page source
+document.addEventListener('copy', e => {
+  const sel = window.getSelection().toString();
+  // Allow copying chat messages but not page source
+  if (sel.length > 500) e.preventDefault();
+});
 
 init();
 </script>
