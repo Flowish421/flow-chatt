@@ -514,11 +514,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             for r in rows:
                 ch = dict(r)
                 vis = ch.get("visibility", "public")
-                # Private rooms: only show to members
-                if vis == "private" and ch["name"] not in user_rooms:
-                    continue
                 ch["is_member"] = ch["name"] in user_rooms
                 ch["user_role"] = user_rooms.get(ch["name"], None)
+                # Private rooms: show name but mark as locked if not member
+                if vis == "private" and not ch["is_member"]:
+                    ch["locked"] = True
+                    # Don't expose topic/owner to non-members
+                    ch["topic"] = ""
                 channels.append(ch)
 
             self.send_json({"ok": True, "channels": channels})

@@ -114,14 +114,25 @@ body {
   letter-spacing: 1px; text-transform: uppercase;
 }
 
-/* Delete button */
-.msg-del {
-  display: none; margin-left: 10px; cursor: pointer; font-size: 16px;
-  color: #f87171; opacity: 0.8; vertical-align: middle;
-  padding: 2px 4px; border-radius: 4px;
+/* Message action buttons */
+.msg-actions {
+  display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: middle;
+  opacity: 0; transition: opacity 0.15s;
 }
-.msg:hover .msg-del { display: inline-block; }
-.msg-del:hover { opacity: 1; background: rgba(248,113,113,0.15); }
+.msg:hover .msg-actions { opacity: 1; }
+.msg-act {
+  cursor: pointer; font-size: 14px; padding: 2px 5px; border-radius: 4px;
+  border: none; background: none; line-height: 1;
+}
+.msg-act.del { color: #f87171; }
+.msg-act.del:hover { background: rgba(248,113,113,0.15); }
+.msg-act.hide { color: var(--text-muted); }
+.msg-act.hide:hover { background: var(--bg-elevated); color: var(--amber); }
+.msg-hidden {
+  opacity: 0.3; font-style: italic;
+}
+.msg-hidden .content, .msg-hidden .msg-images { display: none; }
+.msg-hidden .msg-actions { opacity: 1; }
 
 /* Ephemeral messages */
 .msg-ephemeral {
@@ -737,9 +748,16 @@ async function loadChannels() {
 function makeChannelRow(c, type) {
   const row = document.createElement('div');
   row.className = 'ch-row' + (c.name === currentChannel ? ' active' : '');
-  if (!c.is_member && type !== 'pin') row.style.opacity = '0.5';
+  const isLocked = c.locked && !c.is_member;
+  if (!c.is_member && type !== 'pin') row.style.opacity = isLocked ? '0.6' : '0.5';
   row.dataset.channel = c.name;
-  row.addEventListener('click', () => switchChannel(c.name));
+
+  if (isLocked) {
+    // Locked private room — click to request access
+    row.addEventListener('click', () => requestAccess(c.name, c.display_name || c.name));
+  } else {
+    row.addEventListener('click', () => switchChannel(c.name));
+  }
 
   const icon = document.createElement('span');
   icon.className = 'hash';
@@ -751,7 +769,19 @@ function makeChannelRow(c, type) {
   chName.textContent = c.display_name || c.name;
   row.appendChild(chName);
 
+  // Show lock badge on locked private rooms
+  if (isLocked) {
+    const badge = document.createElement('span');
+    badge.style.cssText = 'font-size:9px;color:var(--amber);margin-left:auto;font-family:var(--font-mono)';
+    badge.textContent = 'Be om tillgang';
+    row.appendChild(badge);
+  }
+
   return row;
+}
+
+function requestAccess(roomName, displayName) {
+  alert('Rummet "' + displayName + '" ar privat.\n\nBe agaren bjuda in dig, eller anvand en inbjudningslank.');
 }
 
 async function switchChannel(name) {
@@ -850,15 +880,27 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
   if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
     html += `<span class="content">${fmtContent(content)}</span>`;
   }
-  // Delete button (own messages only, not ephemeral)
-  if (author === username && msgId && !ephemeral && !msgId.startsWith('tmp-')) {
-    html += `<span class="msg-del" title="Radera">&#128465;</span>`;
+  // Action buttons (not ephemeral, not temp)
+  if (msgId && !ephemeral && !msgId.startsWith('tmp-')) {
+    html += '<span class="msg-actions">';
+    if (author === username) {
+      html += '<button class="msg-act del" title="Radera ditt meddelande">&#128465;</button>';
+    } else {
+      html += '<button class="msg-act hide" title="Dolj detta meddelande">&#128064;</button>';
+    }
+    html += '</span>';
   }
   div.innerHTML = html;
 
-  // Wire delete button click
-  const delBtn = div.querySelector('.msg-del');
+  // Wire action buttons
+  const delBtn = div.querySelector('.msg-act.del');
   if (delBtn) delBtn.addEventListener('click', () => deleteMessage(msgId));
+  const hideBtn = div.querySelector('.msg-act.hide');
+  if (hideBtn) hideBtn.addEventListener('click', () => {
+    div.classList.toggle('msg-hidden');
+    hideBtn.title = div.classList.contains('msg-hidden') ? 'Visa meddelandet' : 'Dolj detta meddelande';
+    hideBtn.innerHTML = div.classList.contains('msg-hidden') ? '&#128065;' : '&#128064;';
+  });
 
   // Render attachments
   if (attachments && attachments.length) {
