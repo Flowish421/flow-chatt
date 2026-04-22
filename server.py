@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 DB_PATH = os.environ.get("CHAT_DB", "chat.db")
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
+MAX_BODY = 10 * 1024 * 1024  # 10MB max for image uploads
 
 # --- Database ---
 
@@ -32,9 +33,15 @@ def init_db():
             author TEXT NOT NULL,
             content TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'user',
+            attachments TEXT DEFAULT '[]',
             created_at TEXT NOT NULL
         )
     """)
+    # Migration: add attachments column if missing (existing DBs)
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS channels (
             name TEXT PRIMARY KEY,
@@ -155,11 +162,19 @@ class ChatHandler(BaseHTTPRequestHandler):
                 (channel, limit)
             ).fetchall()
             db.close()
+            messages = []
+            for r in rows:
+                m = dict(r)
+                try:
+                    m["attachments"] = json.loads(m.get("attachments") or "[]")
+                except:
+                    m["attachments"] = []
+                messages.append(m)
             self.send_json({
                 "ok": True,
                 "channel": channel,
-                "count": len(rows),
-                "messages": [dict(r) for r in rows]
+                "count": len(messages),
+                "messages": messages
             })
             return
 
@@ -204,6 +219,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > MAX_BODY:
+            self.send_json({"ok": False, "error": "payload too large (max 10MB)"}, 413)
+            return
         body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
 
         # API: send message
@@ -213,28 +231,31 @@ class ChatHandler(BaseHTTPRequestHandler):
             content = body.get("content", "").strip()
             author = body.get("author", "anonymous").strip()
             role = body.get("role", "user")
+            attachments = body.get("attachments", [])
 
-            if not content:
+            if not content and not attachments:
                 self.send_json({"ok": False, "error": "empty message"}, 400)
                 return
 
+            if not content and attachments:
+                content = "[bild]" if len(attachments) == 1 else f"[{len(attachments)} bilder]"
+
             msg_id = str(uuid.uuid4())
             ts = now()
+            att_json = json.dumps(attachments) if attachments else "[]"
 
             db = get_db()
-            # Auto-create channel if doesn't exist
             db.execute(
                 "INSERT OR IGNORE INTO channels (name, display_name, topic, created_by, created_at) VALUES (?, ?, '', ?, ?)",
                 (channel, channel, author, ts)
             )
             db.execute(
-                "INSERT INTO messages (id, channel, author, content, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (msg_id, channel, author, content, role, ts)
+                "INSERT INTO messages (id, channel, author, content, role, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (msg_id, channel, author, content, role, att_json, ts)
             )
             db.commit()
             db.close()
 
-            # Broadcast to SSE clients
             broadcast({
                 "event_type": "chat_message",
                 "id": msg_id,
@@ -242,6 +263,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "author": author,
                 "content": content,
                 "role": role,
+                "attachments": attachments,
                 "created_at": ts,
             })
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cortex Chat</title>
+<title>Flow Chatt</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -70,7 +70,6 @@ body {
 #conn-info .dot { color: var(--green); }
 #conn-info .user-name { color: var(--accent); cursor: pointer; }
 #conn-info .user-name:hover { text-decoration: underline; }
-#online-count { color: var(--text-muted); margin-left: 4px; }
 
 /* Main */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -78,9 +77,7 @@ body {
   padding: 10px 20px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 10px; background: var(--bg-surface);
 }
-#chat-header h1 {
-  font-family: var(--font-mono); font-size: 15px; font-weight: 500;
-}
+#chat-header h1 { font-family: var(--font-mono); font-size: 15px; font-weight: 500; }
 #chat-header .topic { font-size: 12px; color: var(--text-muted); flex: 1; }
 
 /* Messages */
@@ -110,11 +107,51 @@ body {
   letter-spacing: 1px; text-transform: uppercase;
 }
 
-/* Input */
+/* Attachments */
+.msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.msg-images img {
+  max-width: 360px; max-height: 260px; border-radius: 8px;
+  cursor: pointer; object-fit: cover; border: 1px solid var(--border);
+}
+.msg-images img:hover { border-color: var(--accent); }
+
+/* Attachment preview strip */
+#attach-preview {
+  padding: 0 20px; background: var(--bg-surface); display: none;
+  gap: 8px; flex-wrap: wrap;
+}
+#attach-preview.has-files { display: flex; padding-top: 8px; }
+.ap-thumb {
+  position: relative; width: 64px; height: 64px; border-radius: 6px;
+  overflow: hidden; border: 1px solid var(--border); background: var(--bg-elevated);
+}
+.ap-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.ap-rm {
+  position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7);
+  border: none; color: var(--red); font-size: 14px; cursor: pointer;
+  border-radius: 50%; width: 18px; height: 18px; line-height: 18px; text-align: center;
+}
+.ap-rm:hover { background: var(--red); color: #000; }
+
+/* Lightbox */
+#lightbox {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9);
+  z-index: 999; align-items: center; justify-content: center; cursor: pointer;
+}
+#lightbox.on { display: flex; }
+#lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
+
+/* Input area */
 #input-area {
   padding: 12px 20px; border-top: 1px solid var(--border);
   background: var(--bg-surface); display: flex; gap: 8px; align-items: flex-end;
 }
+#attach-btn {
+  background: none; border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text-muted); padding: 9px 10px; cursor: pointer; font-size: 16px;
+  line-height: 1;
+}
+#attach-btn:hover { color: var(--accent); border-color: var(--accent); }
 #msg-input {
   flex: 1; background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: 8px; color: var(--text-primary); font-family: var(--font-mono);
@@ -130,6 +167,15 @@ body {
 }
 #send-btn:hover { opacity: 0.85; }
 
+/* Drag overlay */
+#drop-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(79,143,247,0.1);
+  border: 3px dashed var(--accent); z-index: 100;
+  align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 18px; color: var(--accent);
+}
+#drop-overlay.show { display: flex; }
+
 /* Mobile */
 @media (max-width: 640px) {
   #sidebar { width: 60px; }
@@ -140,11 +186,9 @@ body {
   #conn-info { font-size: 8px; }
   #messages { padding: 8px; }
   .msg { font-size: 12px; }
+  .msg-images img { max-width: 200px; max-height: 160px; }
   #chat-header h1 { font-size: 13px; }
 }
-
-/* Typing indicator */
-#typing { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); padding: 2px 20px 6px; min-height: 18px; }
 </style>
 </head>
 <body>
@@ -156,7 +200,6 @@ body {
   <div id="conn-info">
     <span class="dot">&#9679;</span>
     <span class="user-name" id="user-display" onclick="changeName()" title="Klicka for att byta namn"></span>
-    <span id="online-count"></span>
   </div>
 </div>
 
@@ -166,13 +209,18 @@ body {
     <div class="topic" id="header-topic"></div>
   </div>
   <div id="messages"></div>
-  <div id="typing"></div>
+  <div id="attach-preview"></div>
   <div id="input-area">
+    <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Bifoga bild">&#128206;</button>
+    <input type="file" id="file-input" multiple accept="image/*" style="display:none" onchange="onFiles(this.files)">
     <textarea id="msg-input" placeholder="Skriv ett meddelande..." rows="1"
       onkeydown="handleKey(event)"></textarea>
     <button id="send-btn" onclick="send()">Skicka</button>
   </div>
 </div>
+
+<div id="lightbox" onclick="this.classList.remove('on')"><img id="lb-img"></div>
+<div id="drop-overlay">Slapp bilden har</div>
 
 <script>
 // === State ===
@@ -181,6 +229,7 @@ let username = localStorage.getItem('cortex-chat-user') || '';
 let eventSource = null;
 const seenIds = new Set();
 let lastDateShown = '';
+let pendingFiles = []; // [{dataUrl, name, size}]
 
 // === Init ===
 async function init() {
@@ -195,6 +244,7 @@ async function init() {
 
   await loadChannels();
   switchChannel(currentChannel);
+  setupDragDrop();
 }
 
 function changeName() {
@@ -276,7 +326,7 @@ async function loadMessages(channel) {
       msgs.forEach(m => {
         seenIds.add(m.id);
         addDateSeparator(m.created_at);
-        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at);
+        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || []);
       });
     }
   } catch(e) {
@@ -299,12 +349,35 @@ function addDateSeparator(ts) {
   }
 }
 
-function appendMsg(author, content, role, timestamp) {
+function appendMsg(author, content, role, timestamp, attachments) {
   const el = document.getElementById('messages');
   const time = timestamp ? timestamp.substring(11, 16) : '';
   const div = document.createElement('div');
   div.className = 'msg role-' + role;
-  div.innerHTML = `<span class="time">${time}</span><span class="author">${esc(author)}</span><span class="content">${fmtContent(content)}</span>`;
+
+  let html = `<span class="time">${time}</span><span class="author">${esc(author)}</span>`;
+  if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
+    html += `<span class="content">${fmtContent(content)}</span>`;
+  }
+  div.innerHTML = html;
+
+  // Render attachments
+  if (attachments && attachments.length) {
+    const imgWrap = document.createElement('div');
+    imgWrap.className = 'msg-images';
+    attachments.forEach(a => {
+      if (a.dataUrl && a.dataUrl.startsWith('data:image')) {
+        const img = document.createElement('img');
+        img.src = a.dataUrl;
+        img.loading = 'lazy';
+        img.alt = a.name || 'bild';
+        img.onclick = () => openLightbox(a.dataUrl);
+        imgWrap.appendChild(img);
+      }
+    });
+    if (imgWrap.children.length) div.appendChild(imgWrap);
+  }
+
   el.appendChild(div);
 }
 
@@ -321,6 +394,11 @@ function scrollBottom() {
   el.scrollTop = el.scrollHeight;
 }
 
+function openLightbox(src) {
+  document.getElementById('lb-img').src = src;
+  document.getElementById('lightbox').classList.add('on');
+}
+
 // === SSE ===
 function connectSSE() {
   if (eventSource) eventSource.close();
@@ -331,40 +409,119 @@ function connectSSE() {
       if (d.event_type !== 'chat_message') return;
       if (d.channel !== currentChannel) return;
       if (d.id && seenIds.has(d.id)) return;
-      // Skip own messages (already shown optimistically)
       if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
       if (d.id) seenIds.add(d.id);
       addDateSeparator(d.created_at);
-      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at);
+      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || []);
       scrollBottom();
-      // Notification if tab not focused
       if (document.hidden && Notification.permission === 'granted') {
-        new Notification(d.author + ' i #' + d.channel, { body: d.content.substring(0, 100) });
+        new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
       }
     } catch(err) {}
   };
   eventSource.onerror = () => console.log('SSE reconnecting...');
 }
 
+// === Files / Images ===
+function onFiles(fileList) {
+  for (const file of fileList) {
+    if (!file.type.startsWith('image/')) continue;
+    if (file.size > 5 * 1024 * 1024) {
+      appendSystem('Bilden ' + file.name + ' ar for stor (max 5MB)');
+      continue;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      pendingFiles.push({ dataUrl: e.target.result, name: file.name, size: file.size });
+      renderPreview();
+    };
+    reader.readAsDataURL(file);
+  }
+  document.getElementById('file-input').value = '';
+}
+
+function renderPreview() {
+  const el = document.getElementById('attach-preview');
+  el.classList.toggle('has-files', pendingFiles.length > 0);
+  el.innerHTML = pendingFiles.map((f, i) =>
+    `<div class="ap-thumb">
+      <img src="${f.dataUrl}">
+      <button class="ap-rm" onclick="removePending(${i})">x</button>
+    </div>`
+  ).join('');
+}
+
+function removePending(i) {
+  pendingFiles.splice(i, 1);
+  renderPreview();
+}
+
+// Paste images
+document.addEventListener('paste', (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) onFiles([file]);
+    }
+  }
+});
+
+// Drag & drop
+function setupDragDrop() {
+  const overlay = document.getElementById('drop-overlay');
+  let dragCount = 0;
+
+  document.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragCount++;
+    if (e.dataTransfer.types.includes('Files')) overlay.classList.add('show');
+  });
+  document.addEventListener('dragleave', (e) => {
+    dragCount--;
+    if (dragCount <= 0) { overlay.classList.remove('show'); dragCount = 0; }
+  });
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('drop', (e) => {
+    e.preventDefault();
+    overlay.classList.remove('show');
+    dragCount = 0;
+    if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+  });
+}
+
 // === Send ===
 async function send() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !pendingFiles.length) return;
   input.value = '';
   input.style.height = 'auto';
   window._lastSend = Date.now();
 
+  const attachments = pendingFiles.map(f => ({ dataUrl: f.dataUrl, name: f.name, size: f.size }));
+  pendingFiles = [];
+  renderPreview();
+
   // Optimistic render
   addDateSeparator(new Date().toISOString());
-  appendMsg(username, text, 'self', new Date().toISOString());
+  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments);
   scrollBottom();
 
   try {
     const res = await fetch('/api/channel/' + currentChannel + '/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: text, author: username }),
+      body: JSON.stringify({
+        content: text,
+        author: username,
+        attachments: attachments.length ? attachments : undefined,
+      }),
     }).then(r => r.json());
     if (res.id) seenIds.add(res.id);
     if (!res.ok) appendSystem('Fel: ' + (res.error || 'unknown'));
@@ -402,7 +559,6 @@ function fmtContent(s) {
   let h = esc(s);
   h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // URL detection
   h = h.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent)">$1</a>');
   return h;
 }
