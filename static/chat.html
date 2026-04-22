@@ -80,6 +80,12 @@ body {
 }
 #chat-header h1 { font-family: var(--font-mono); font-size: 15px; font-weight: 500; }
 #chat-header .topic { font-size: 12px; color: var(--text-muted); flex: 1; }
+.header-btn {
+  background: none; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-muted); font-family: var(--font-mono); font-size: 10px;
+  padding: 4px 8px; cursor: pointer;
+}
+.header-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
 
 /* Messages */
 #messages {
@@ -337,9 +343,9 @@ body {
 </div>
 
 <div id="sidebar">
-  <h2>Channels</h2>
+  <h2>Rum / Kanaler</h2>
   <div class="channel-list" id="channel-list"></div>
-  <button id="new-channel-btn" onclick="newChannel()">+ Ny kanal</button>
+  <button id="new-channel-btn" onclick="showCreateModal()">+ Skapa rum</button>
   <div id="conn-info">
     <span class="dot">&#9679;</span>
     <span class="user-name" id="user-display" title="Ditt nickname (last)"></span>
@@ -348,8 +354,17 @@ body {
 
 <div id="main">
   <div id="chat-header">
-    <h1 id="header-name"># general</h1>
+    <h1 id="header-name"># allmant</h1>
     <div class="topic" id="header-topic"></div>
+    <button class="header-btn" id="btn-settings" onclick="showRoomSettings()" style="display:none" title="Ruminställningar">&#9881;</button>
+    <button class="header-btn" id="btn-leave" onclick="leaveRoom()" style="display:none">Lamna</button>
+  </div>
+  <div id="join-bar" style="display:none;padding:12px 20px;background:var(--bg-surface);border-bottom:1px solid var(--border);text-align:center">
+    <span style="color:var(--text-secondary);font-family:var(--font-mono);font-size:12px">Du ar inte med i det har rummet.</span>
+    <button onclick="joinCurrentRoom()" style="background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:6px 16px;cursor:pointer;margin-left:8px">Ga med</button>
+  </div>
+  <div id="system-bar" style="display:none;padding:12px 20px;background:var(--bg-surface);border-bottom:1px solid var(--border);text-align:center">
+    <span style="color:var(--text-muted);font-family:var(--font-mono);font-size:11px">Det har rummet ar skrivskyddat</span>
   </div>
   <div id="messages"></div>
   <div id="attach-preview"></div>
@@ -379,6 +394,46 @@ body {
 
 <div id="lightbox" onclick="if(event.target===this)this.classList.remove('on')"><img id="lb-img"></div>
 <div id="drop-overlay">Slapp bilden har</div>
+
+<!-- Create Room Modal -->
+<div id="create-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center">
+  <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:340px;max-width:90%">
+    <h2 style="font-family:var(--font-mono);font-size:14px;margin-bottom:16px;color:var(--accent)">Skapa rum</h2>
+    <input id="cm-name" type="text" placeholder="Rummets namn" maxlength="50" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;padding:8px 12px;margin-bottom:8px;outline:none">
+    <input id="cm-display" type="text" placeholder="Visningsnamn (valfritt)" maxlength="100" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;padding:8px 12px;margin-bottom:12px;outline:none">
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <label style="flex:1;display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)" id="cm-pub-label">
+        <input type="radio" name="cm-vis" value="public" checked onchange="document.getElementById('cm-pub-label').style.borderColor='var(--accent)';document.getElementById('cm-priv-label').style.borderColor='var(--border)'"> Offentligt
+      </label>
+      <label style="flex:1;display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)" id="cm-priv-label">
+        <input type="radio" name="cm-vis" value="private" onchange="document.getElementById('cm-priv-label').style.borderColor='var(--accent)';document.getElementById('cm-pub-label').style.borderColor='var(--border)'"> Privat
+      </label>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="doCreateRoom()" style="flex:1;background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:10px;cursor:pointer">Skapa</button>
+      <button onclick="document.getElementById('create-modal').style.display='none'" style="flex:1;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:10px;cursor:pointer">Avbryt</button>
+    </div>
+  </div>
+</div>
+
+<!-- Room Settings Modal -->
+<div id="settings-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center">
+  <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:380px;max-width:90%;max-height:80vh;overflow-y:auto">
+    <h2 style="font-family:var(--font-mono);font-size:14px;margin-bottom:16px;color:var(--accent)">Ruminstellningar</h2>
+    <div id="sm-members" style="margin-bottom:16px"></div>
+    <h3 style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Bjud in</h3>
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <input id="sm-invite-name" type="text" placeholder="Anvandarnamn" style="flex:1;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:6px 10px;outline:none">
+      <button onclick="inviteByName()" style="background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:11px;padding:6px 12px;cursor:pointer">Bjud in</button>
+    </div>
+    <button onclick="generateInviteCode()" style="width:100%;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:11px;padding:8px;cursor:pointer;margin-bottom:8px">Skapa inbjudningslank</button>
+    <div id="sm-invite-result" style="font-family:var(--font-mono);font-size:11px;color:var(--green);margin-bottom:16px;word-break:break-all"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="document.getElementById('settings-modal').style.display='none'" style="flex:1;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:8px;cursor:pointer">Stang</button>
+      <button onclick="deleteCurrentRoom()" style="background:none;border:1px solid var(--red);border-radius:6px;color:var(--red);font-family:var(--font-mono);font-size:12px;padding:8px 16px;cursor:pointer">Radera rum</button>
+    </div>
+  </div>
+</div>
 <div id="emoji-picker">
   <div class="ep-tabs">
     <button class="ep-tab active" onclick="showEmojiTab('smileys',this)">😀</button>
@@ -393,7 +448,9 @@ body {
 
 <script>
 // === State ===
-let currentChannel = 'general';
+let currentChannel = 'allmant';
+let currentRoomAccess = 'system'; // 'system'|'read'|'write'|'owner'
+let channelData = []; // cached channel list
 let username = localStorage.getItem('cortex-chat-user') || '';
 let eventSource = null;
 const seenIds = new Set();
@@ -536,6 +593,7 @@ async function startChat() {
   }
 
   await loadChannels();
+  await checkInviteCode();
   switchChannel(currentChannel);
   setupDragDrop();
 
@@ -550,72 +608,97 @@ async function startChat() {
 // === Channels ===
 async function loadChannels() {
   try {
-    const data = await fetch('/api/channels').then(r => r.json());
+    const url = '/api/channels?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken);
+    const data = await fetch(url).then(r => r.json());
+    channelData = data.channels || [];
     const list = document.getElementById('channel-list');
-    const channels = data.channels || [];
     list.innerHTML = '';
-    channels.forEach(c => {
-      const row = document.createElement('div');
-      row.className = 'ch-row' + (c.name === currentChannel ? ' active' : '');
-      row.dataset.channel = c.name;
-      row.addEventListener('click', () => switchChannel(c.name));
 
-      const hash = document.createElement('span');
-      hash.className = 'hash';
-      hash.textContent = '#';
-      row.appendChild(hash);
+    const system = channelData.filter(c => c.visibility === 'system');
+    const pub = channelData.filter(c => c.visibility === 'public');
+    const priv = channelData.filter(c => c.visibility === 'private');
 
-      const chName = document.createElement('span');
-      chName.className = 'ch-name';
-      chName.textContent = c.display_name || c.name;
-      row.appendChild(chName);
+    // System rooms (pinned)
+    system.forEach(c => list.appendChild(makeChannelRow(c, 'pin')));
 
-      if (c.name !== 'general') {
-        const del = document.createElement('button');
-        del.className = 'ch-del';
-        del.title = 'Ta bort';
-        del.innerHTML = '&#215;';
-        del.addEventListener('click', (e) => { e.stopPropagation(); delChannel(c.name); });
-        row.appendChild(del);
-      }
+    // Public rooms
+    if (pub.length) {
+      const label = document.createElement('div');
+      label.style.cssText = 'font-family:var(--font-mono);font-size:9px;color:var(--text-muted);padding:10px 10px 4px;letter-spacing:2px;text-transform:uppercase';
+      label.textContent = 'Offentliga';
+      list.appendChild(label);
+      pub.forEach(c => list.appendChild(makeChannelRow(c, 'public')));
+    }
 
-      list.appendChild(row);
-    });
+    // Private rooms
+    if (priv.length) {
+      const label = document.createElement('div');
+      label.style.cssText = 'font-family:var(--font-mono);font-size:9px;color:var(--text-muted);padding:10px 10px 4px;letter-spacing:2px;text-transform:uppercase';
+      label.textContent = 'Privata';
+      list.appendChild(label);
+      priv.forEach(c => list.appendChild(makeChannelRow(c, 'private')));
+    }
   } catch(e) {}
+}
+
+function makeChannelRow(c, type) {
+  const row = document.createElement('div');
+  row.className = 'ch-row' + (c.name === currentChannel ? ' active' : '');
+  if (!c.is_member && type !== 'pin') row.style.opacity = '0.5';
+  row.dataset.channel = c.name;
+  row.addEventListener('click', () => switchChannel(c.name));
+
+  const icon = document.createElement('span');
+  icon.className = 'hash';
+  icon.textContent = type === 'pin' ? '\ud83d\udccc' : type === 'private' ? '\ud83d\udd12' : '#';
+  row.appendChild(icon);
+
+  const chName = document.createElement('span');
+  chName.className = 'ch-name';
+  chName.textContent = c.display_name || c.name;
+  row.appendChild(chName);
+
+  return row;
 }
 
 async function switchChannel(name) {
   currentChannel = name;
   lastDateShown = '';
-  document.getElementById('header-name').textContent = '# ' + name;
+
+  // Find channel info
+  const ch = channelData.find(c => c.name === name) || {};
+  const vis = ch.visibility || 'public';
+  const isMember = ch.is_member || false;
+  const isOwner = ch.user_role === 'owner';
+
+  document.getElementById('header-name').textContent = (vis === 'private' ? '\ud83d\udd12 ' : '# ') + (ch.display_name || name);
+  document.getElementById('header-topic').textContent = ch.topic || '';
+
+  // Determine access level
+  if (vis === 'system') currentRoomAccess = 'system';
+  else if (isOwner) currentRoomAccess = 'owner';
+  else if (isMember) currentRoomAccess = 'write';
+  else currentRoomAccess = 'read';
+
+  // Show/hide UI based on access
+  document.getElementById('join-bar').style.display = (currentRoomAccess === 'read') ? '' : 'none';
+  document.getElementById('system-bar').style.display = (currentRoomAccess === 'system') ? '' : 'none';
+  document.getElementById('btn-settings').style.display = (currentRoomAccess === 'owner') ? '' : 'none';
+  document.getElementById('btn-leave').style.display = (currentRoomAccess === 'write' && name !== 'allmant') ? '' : 'none';
+
+  // Show/hide input area
+  const canWrite = (currentRoomAccess === 'write' || currentRoomAccess === 'owner');
+  document.getElementById('input-area').style.display = canWrite ? '' : 'none';
+  document.getElementById('emoji-input-bar').style.display = canWrite ? '' : 'none';
+  document.getElementById('attach-preview').style.display = 'none';
+
   document.querySelectorAll('.ch-row').forEach(el => {
     el.classList.toggle('active', el.dataset.channel === name);
   });
   history.replaceState(null, '', '?channel=' + encodeURIComponent(name));
   await loadMessages(name);
   connectSSE();
-  document.getElementById('msg-input').focus();
-}
-
-async function newChannel() {
-  const name = prompt('Kanalnamn:');
-  if (!name || !name.trim()) return;
-  const clean = name.trim().toLowerCase().replace(/[^a-z0-9\u00e5\u00e4\u00f6-]/g, '-').replace(/-+/g, '-');
-  await fetch('/api/channel', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: clean, display_name: name.trim(), created_by: username, token: userToken }),
-  });
-  await loadChannels();
-  switchChannel(clean);
-}
-
-async function delChannel(name) {
-  if (!confirm('Ta bort #' + name + '?')) return;
-  await fetch('/api/channel/' + encodeURIComponent(name), { method: 'DELETE' });
-  if (currentChannel === name) currentChannel = 'general';
-  await loadChannels();
-  switchChannel(currentChannel);
+  if (canWrite) document.getElementById('msg-input').focus();
 }
 
 // === Messages ===
@@ -625,7 +708,7 @@ async function loadMessages(channel) {
   seenIds.clear();
   lastDateShown = '';
   try {
-    const data = await fetch('/api/channel/' + encodeURIComponent(channel) + '/messages?limit=200').then(r => r.json());
+    const data = await fetch('/api/channel/' + encodeURIComponent(channel) + '/messages?limit=200&user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
     const msgs = (data.messages || []).reverse();
     if (msgs.length === 0) {
       el.innerHTML = '<div class="msg-system">Inga meddelanden. Skriv nagot!</div>';
@@ -785,6 +868,11 @@ function connectSSE() {
     try {
       const d = JSON.parse(e.data);
       // Reaction update
+      // Room events (invite/kick)
+      if (d.event_type === 'invited' || d.event_type === 'kicked') {
+        handleRoomEvent(d);
+        return;
+      }
       if (d.event_type === 'reaction' && d.message_id) {
         const container = document.getElementById('reacts-' + d.message_id);
         if (container) renderReactions(container, d.reactions || [], d.message_id);
@@ -1032,6 +1120,198 @@ function fmtContent(s) {
 
 // Disable drag on page (except file drop zone)
 document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.preventDefault(); });
+
+// === Room Management ===
+function showCreateModal() {
+  document.getElementById('create-modal').style.display = 'flex';
+  document.getElementById('cm-name').value = '';
+  document.getElementById('cm-display').value = '';
+  document.getElementById('cm-name').focus();
+}
+
+async function doCreateRoom() {
+  const nameInput = document.getElementById('cm-name').value.trim().toLowerCase().replace(/[^a-z0-9\u00e5\u00e4\u00f6-]/g, '-').replace(/-+/g, '-');
+  const display = document.getElementById('cm-display').value.trim() || nameInput;
+  const vis = document.querySelector('input[name="cm-vis"]:checked').value;
+  if (!nameInput || nameInput.length < 2) return;
+
+  try {
+    const res = await fetch('/api/channel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: nameInput, display_name: display, visibility: vis, created_by: username, token: userToken }),
+    }).then(r => r.json());
+    if (res.ok) {
+      document.getElementById('create-modal').style.display = 'none';
+      await loadChannels();
+      switchChannel(nameInput);
+    } else {
+      alert(res.error || 'Kunde inte skapa rum');
+    }
+  } catch(e) { alert('Serverfel'); }
+}
+
+async function joinCurrentRoom() {
+  try {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    if (res.ok) {
+      await loadChannels();
+      switchChannel(currentChannel);
+    }
+  } catch(e) {}
+}
+
+async function leaveRoom() {
+  if (!confirm('Lamna rummet?')) return;
+  try {
+    await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    });
+    currentChannel = 'allmant';
+    await loadChannels();
+    switchChannel('allmant');
+  } catch(e) {}
+}
+
+async function showRoomSettings() {
+  document.getElementById('settings-modal').style.display = 'flex';
+  document.getElementById('sm-invite-result').textContent = '';
+  // Load members
+  try {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/members', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    const el = document.getElementById('sm-members');
+    if (res.ok && res.members) {
+      el.innerHTML = '<div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Medlemmar (' + res.members.length + ')</div>';
+      res.members.forEach(m => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)';
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = m.username + (m.role === 'owner' ? ' (agare)' : '');
+        row.appendChild(nameSpan);
+        if (m.role !== 'owner') {
+          const kickBtn = document.createElement('button');
+          kickBtn.textContent = 'Kicka';
+          kickBtn.style.cssText = 'background:none;border:1px solid var(--red);border-radius:4px;color:var(--red);font-family:var(--font-mono);font-size:10px;padding:2px 8px;cursor:pointer';
+          kickBtn.addEventListener('click', () => kickMember(m.username));
+          row.appendChild(kickBtn);
+        }
+        el.appendChild(row);
+      });
+    }
+  } catch(e) {}
+}
+
+async function inviteByName() {
+  const name = document.getElementById('sm-invite-name').value.trim();
+  if (!name) return;
+  try {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, username: name }),
+    }).then(r => r.json());
+    if (res.ok) {
+      document.getElementById('sm-invite-name').value = '';
+      document.getElementById('sm-invite-result').textContent = name + ' inbjuden!';
+      showRoomSettings(); // Refresh member list
+    } else {
+      document.getElementById('sm-invite-result').textContent = res.error || 'Fel';
+      document.getElementById('sm-invite-result').style.color = 'var(--red)';
+    }
+  } catch(e) {}
+}
+
+async function generateInviteCode() {
+  try {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, generate_code: true, uses: 10 }),
+    }).then(r => r.json());
+    if (res.ok) {
+      const link = location.origin + '/?invite=' + res.code;
+      document.getElementById('sm-invite-result').innerHTML = '';
+      document.getElementById('sm-invite-result').style.color = 'var(--green)';
+      const el = document.getElementById('sm-invite-result');
+      el.textContent = link;
+      el.style.cursor = 'pointer';
+      el.onclick = () => { navigator.clipboard.writeText(link); el.textContent = 'Kopierad!'; setTimeout(() => { el.textContent = link; }, 1500); };
+    }
+  } catch(e) {}
+}
+
+async function kickMember(target) {
+  if (!confirm('Kicka ' + target + '?')) return;
+  try {
+    await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/kick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, username: target }),
+    });
+    showRoomSettings(); // Refresh
+  } catch(e) {}
+}
+
+async function deleteCurrentRoom() {
+  if (!confirm('RADERA rummet och alla meddelanden?')) return;
+  try {
+    await fetch('/api/channel/' + encodeURIComponent(currentChannel), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    });
+    document.getElementById('settings-modal').style.display = 'none';
+    currentChannel = 'allmant';
+    await loadChannels();
+    switchChannel('allmant');
+  } catch(e) {}
+}
+
+// Handle invite codes from URL
+async function checkInviteCode() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get('invite');
+  if (!code || !userToken) return;
+  try {
+    const res = await fetch('/api/invite/' + encodeURIComponent(code) + '/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    if (res.ok) {
+      // Clear invite from URL
+      history.replaceState(null, '', '?channel=' + res.room);
+      await loadChannels();
+      switchChannel(res.room);
+    } else {
+      alert(res.error || 'Ogiltig inbjudningskod');
+    }
+  } catch(e) {}
+}
+
+// Handle SSE events for invites/kicks
+function handleRoomEvent(d) {
+  if (d.event_type === 'invited' && d.username === username) {
+    loadChannels(); // New room appeared
+  }
+  if (d.event_type === 'kicked' && d.username === username) {
+    if (currentChannel === d.room) {
+      currentChannel = 'allmant';
+      switchChannel('allmant');
+    }
+    loadChannels();
+  }
+}
 
 init();
 </script>

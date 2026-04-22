@@ -31,6 +31,100 @@ CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via env var — no default
 
+WELCOME_TEXT = """Valkommen till Flow Chatt!
+
+Hur det fungerar:
+- Offentliga rum: alla kan se och lasa. Klicka "Ga med" for att skriva.
+- Privata rum: bara inbjudna kan se och skriva. Skaparen bjuder in via namn eller kod.
+- Skapa rum: klicka "+ Skapa rum" i sidofaltet.
+- Emojis: klicka emoji-knappen eller reagera pa meddelanden med +
+- Bilder: klistra in, dra & slapp, eller klicka gem-ikonen.
+
+Regler:
+- Var schysst mot varandra
+- Inget spam
+- Admins kan kicka/radera konton
+
+Det har rummet ar skrivskyddat."""
+
+# --- Membership cache (in-memory for fast SSE filtering) ---
+membership_cache = {}  # room_name -> set(username)
+membership_lock = threading.Lock()
+# Channel visibility cache
+visibility_cache = {}  # room_name -> 'public'|'private'|'system'
+visibility_lock = threading.Lock()
+
+
+def load_caches():
+    """Load membership and visibility caches from DB."""
+    db = get_db()
+    # Membership
+    rows = db.execute("SELECT room, username FROM room_members").fetchall()
+    cache = {}
+    for r in rows:
+        cache.setdefault(r["room"], set()).add(r["username"])
+    with membership_lock:
+        membership_cache.clear()
+        membership_cache.update(cache)
+    # Visibility
+    rows = db.execute("SELECT name, visibility FROM channels").fetchall()
+    vcache = {}
+    for r in rows:
+        vcache[r["name"]] = r["visibility"] or "public"
+    with visibility_lock:
+        visibility_cache.clear()
+        visibility_cache.update(vcache)
+    db.close()
+
+
+def cache_add_member(room, username):
+    with membership_lock:
+        membership_cache.setdefault(room, set()).add(username)
+
+
+def cache_remove_member(room, username):
+    with membership_lock:
+        if room in membership_cache:
+            membership_cache[room].discard(username)
+
+
+def cache_set_visibility(room, vis):
+    with visibility_lock:
+        visibility_cache[room] = vis
+
+
+def is_member(room, username):
+    with membership_lock:
+        return username in membership_cache.get(room, set())
+
+
+def check_room_access(db, room_name, username=None):
+    """Returns (room_row, access_level) or (None, None).
+    access_level: 'system' | 'read' | 'write' | 'owner'
+    """
+    room = db.execute("SELECT * FROM channels WHERE name = ?", (room_name,)).fetchone()
+    if not room:
+        return None, None
+    vis = room["visibility"] or "public"
+    if vis == "system":
+        return room, "system"
+    if vis == "public":
+        if not username:
+            return room, "read"
+        member = db.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (room_name, username)).fetchone()
+        if member:
+            return room, "owner" if member["role"] == "owner" else "write"
+        return room, "read"
+    if vis == "private":
+        if not username:
+            return None, None
+        member = db.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (room_name, username)).fetchone()
+        if not member:
+            return None, None
+        return room, "owner" if member["role"] == "owner" else "write"
+    return None, None
+
+
 # --- DoS protection limits ---
 MAX_USERS = 500               # Max registered users
 MAX_CHANNELS = 50             # Max channels
@@ -116,11 +210,40 @@ def init_db():
             name TEXT PRIMARY KEY,
             display_name TEXT,
             topic TEXT DEFAULT '',
+            visibility TEXT NOT NULL DEFAULT 'public',
+            owner TEXT,
             created_by TEXT,
             created_at TEXT NOT NULL
         )
     """)
+    # Migration: add visibility/owner columns if missing
+    for col, default in [("visibility", "'public'"), ("owner", "NULL")]:
+        try:
+            conn.execute(f"ALTER TABLE channels ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel, created_at)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS room_members (
+            room TEXT NOT NULL,
+            username TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at TEXT NOT NULL,
+            PRIMARY KEY (room, username)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_members_user ON room_members(username)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS invites (
+            code TEXT PRIMARY KEY,
+            room TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            uses_left INTEGER DEFAULT 1,
+            expires_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_invites_room ON invites(room)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reactions (
             id TEXT PRIMARY KEY,
@@ -139,10 +262,18 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # Seed the system room "allmant" (read-only instructions)
     conn.execute("""
-        INSERT OR IGNORE INTO channels (name, display_name, topic, created_by, created_at)
-        VALUES ('general', 'General', 'Allmän chatt', 'system', ?)
+        INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at)
+        VALUES ('allmant', 'Allmant', 'Instruktioner och regler', 'system', 'system', 'system', ?)
     """, (now(),))
+    # Seed welcome message in allmant if empty
+    existing = conn.execute("SELECT id FROM messages WHERE channel = 'allmant' LIMIT 1").fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO messages (id, channel, author, content, role, created_at) VALUES (?, 'allmant', 'system', ?, 'system', ?)",
+            (uuid.uuid4().hex, WELCOME_TEXT, now())
+        )
     conn.commit()
     conn.close()
 
@@ -218,11 +349,25 @@ sse_clients = []  # list of (queue, channel_filter, username, ip, connected_at)
 sse_lock = threading.Lock()
 
 
-def broadcast(event_data):
-    """Send event to all SSE clients. Drops events for full queues."""
+def broadcast(event_data, channel=None):
+    """Send event to SSE clients. For private rooms, only send to members."""
+    # Check if this is a private channel
+    filter_members = None
+    if channel:
+        with visibility_lock:
+            vis = visibility_cache.get(channel, "public")
+        if vis == "private":
+            with membership_lock:
+                filter_members = membership_cache.get(channel, set())
+
     with sse_lock:
         dead = []
         for i, entry in enumerate(sse_clients):
+            # Filter: private rooms only go to members
+            if filter_members is not None:
+                sse_user = entry[2] if len(entry) > 2 else ""
+                if sse_user not in filter_members:
+                    continue
             try:
                 if entry[0].qsize() < MAX_QUEUE_SIZE:
                     entry[0].put_nowait(event_data)
@@ -322,18 +467,43 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
             return
 
-        # API: channels
+        # API: channels — filtered by visibility + membership
         if path == "/api/channels":
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            # Verify token if provided
+            authenticated_user = None
+            if req_user and req_token:
+                db = get_db()
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                db.close()
+                if valid:
+                    authenticated_user = req_user
+
             db = get_db()
             rows = db.execute("SELECT * FROM channels ORDER BY created_at").fetchall()
+            # Get user's memberships
+            user_rooms = {}
+            if authenticated_user:
+                members = db.execute("SELECT room, role FROM room_members WHERE username = ?", (authenticated_user,)).fetchall()
+                user_rooms = {m["room"]: m["role"] for m in members}
             db.close()
-            self.send_json({
-                "ok": True,
-                "channels": [dict(r) for r in rows]
-            })
+
+            channels = []
+            for r in rows:
+                ch = dict(r)
+                vis = ch.get("visibility", "public")
+                # Private rooms: only show to members
+                if vis == "private" and ch["name"] not in user_rooms:
+                    continue
+                ch["is_member"] = ch["name"] in user_rooms
+                ch["user_role"] = user_rooms.get(ch["name"], None)
+                channels.append(ch)
+
+            self.send_json({"ok": True, "channels": channels})
             return
 
-        # API: messages for a channel
+        # API: messages for a channel (access controlled)
         if path.startswith("/api/channel/") and path.endswith("/messages"):
             parts = path.split("/")
             channel = parts[3]
@@ -341,7 +511,24 @@ class ChatHandler(BaseHTTPRequestHandler):
                 limit = min(int(params.get("limit", ["100"])[0]), 500)
             except (ValueError, IndexError):
                 limit = 100
+
+            # Access check: private rooms require membership
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            auth_user = None
+            if req_user and req_token:
+                db_v = get_db()
+                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                db_v.close()
+                if valid:
+                    auth_user = req_user
+
             db = get_db()
+            room, access = check_room_access(db, channel, auth_user)
+            if room is None:
+                db.close()
+                self.send_error(404)
+                return
             rows = db.execute(
                 "SELECT id, channel, author, content, role, attachments, created_at FROM messages WHERE channel = ? ORDER BY created_at DESC LIMIT ?",
                 (channel, limit)
@@ -624,6 +811,20 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "token required"}, 401)
                 return
 
+            # Room access check
+            db_ac = get_db()
+            room, access = check_room_access(db_ac, channel, author)
+            db_ac.close()
+            if room is None:
+                self.send_error(404)
+                return
+            if access == "system":
+                self.send_json({"ok": False, "error": "det har rummet ar skrivskyddat"}, 403)
+                return
+            if access == "read":
+                self.send_json({"ok": False, "error": "du maste ga med i rummet forst"}, 403)
+                return
+
             # Per-user spam limit
             if not check_user_spam(author):
                 self.send_json({"ok": False, "error": "du skickar for snabbt, vanta lite"}, 429)
@@ -657,16 +858,6 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             db = get_db()
             try:
-                ch_count = db.execute("SELECT COUNT(*) as c FROM channels").fetchone()["c"]
-                existing_ch = db.execute("SELECT name FROM channels WHERE name = ?", (channel,)).fetchone()
-                if not existing_ch and ch_count >= MAX_CHANNELS:
-                    self.send_json({"ok": False, "error": "max antal kanaler uppnatt"}, 403)
-                    return
-                if not existing_ch:
-                    db.execute(
-                        "INSERT OR IGNORE INTO channels (name, display_name, topic, created_by, created_at) VALUES (?, ?, '', ?, ?)",
-                        (channel, channel, author, ts)
-                    )
                 db.execute(
                     "INSERT INTO messages (id, channel, author, content, role, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (msg_id, channel, author, content, role, att_json, ts)
@@ -688,7 +879,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "has_attachments": bool(attachments),
                 "created_at": ts,
             }
-            broadcast(broadcast_data)
+            broadcast(broadcast_data, channel)
 
             self.send_json({"ok": True, "id": msg_id, "channel": channel})
             return
@@ -718,6 +909,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "token required"}, 401)
                 return
 
+            visibility = body.get("visibility", "public")
+            if visibility not in ("public", "private"):
+                visibility = "public"
+
             db = get_db()
             try:
                 ch_count = db.execute("SELECT COUNT(*) as c FROM channels").fetchone()["c"]
@@ -726,13 +921,21 @@ class ChatHandler(BaseHTTPRequestHandler):
                     return
                 ts = now()
                 db.execute(
-                    "INSERT OR IGNORE INTO channels (name, display_name, topic, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (name, display, topic, creator, ts)
+                    "INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (name, display, topic, visibility, creator, creator, ts)
+                )
+                # Auto-join creator as owner
+                db.execute(
+                    "INSERT OR IGNORE INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                    (name, creator, ts)
                 )
                 db.commit()
             finally:
                 db.close()
-            self.send_json({"ok": True, "channel": name})
+            # Update caches
+            cache_set_visibility(name, visibility)
+            cache_add_member(name, creator)
+            self.send_json({"ok": True, "channel": name, "visibility": visibility})
             return
 
         # API: react to a message
@@ -793,26 +996,289 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "action": action, "reactions": react_list})
             return
 
-        # API: delete channel (requires admin token if set)
+        # API: delete channel — owner or admin only
         if path.startswith("/api/channel/") and path.count("/") == 3:
             parts = path.split("/")
             channel = parts[3]
-            if channel == "general":
-                self.send_json({"ok": False, "error": "cannot delete general"}, 400)
+            if channel == "allmant":
+                self.send_json({"ok": False, "error": "kan inte ta bort allmant"}, 400)
                 return
-            if ADMIN_TOKEN:
+            # Check: admin session, admin bearer, or room owner
+            is_admin = check_admin(self.headers)
+            if not is_admin and ADMIN_TOKEN:
                 auth = self.headers.get("Authorization", "")
-                if auth != f"Bearer {ADMIN_TOKEN}":
-                    self.send_json({"ok": False, "error": "unauthorized"}, 401)
-                    return
+                if hmac.compare_digest(auth, f"Bearer {ADMIN_TOKEN}"):
+                    is_admin = True
+            is_owner = False
+            del_user = body.get("author", "")
+            del_token = body.get("token", "")
+            if del_user and del_token:
+                db_v = get_db()
+                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (del_user, del_token)).fetchone()
+                if valid:
+                    owner_row = db_v.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (channel, del_user)).fetchone()
+                    if owner_row and owner_row["role"] == "owner":
+                        is_owner = True
+                db_v.close()
+            if not is_admin and not is_owner:
+                self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
             db = get_db()
             try:
                 db.execute("DELETE FROM messages WHERE channel = ?", (channel,))
+                db.execute("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel = ?)", (channel,))
+                db.execute("DELETE FROM room_members WHERE room = ?", (channel,))
+                db.execute("DELETE FROM invites WHERE room = ?", (channel,))
                 db.execute("DELETE FROM channels WHERE name = ?", (channel,))
                 db.commit()
             finally:
                 db.close()
+            # Clear caches
+            with membership_lock:
+                membership_cache.pop(channel, None)
+            with visibility_lock:
+                visibility_cache.pop(channel, None)
             self.send_json({"ok": True})
+            return
+
+        # API: join a room
+        if path.startswith("/api/channel/") and path.endswith("/join"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                room, access = check_room_access(db, room_name, author)
+                if room is None:
+                    self.send_error(404)
+                    return
+                vis = room["visibility"] or "public"
+                if vis == "system":
+                    self.send_json({"ok": False, "error": "kan inte ga med i systemrum"}, 400)
+                    return
+                if vis == "private":
+                    self.send_error(404)  # Can't join private without invite
+                    return
+                # Public: join as member
+                db.execute(
+                    "INSERT OR IGNORE INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                    (room_name, author, now())
+                )
+                db.commit()
+            finally:
+                db.close()
+            cache_add_member(room_name, author)
+            self.send_json({"ok": True, "room": room_name})
+            return
+
+        # API: leave a room
+        if path.startswith("/api/channel/") and path.endswith("/leave"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                member = db.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (room_name, author)).fetchone()
+                if not member:
+                    self.send_json({"ok": True})
+                    return
+                db.execute("DELETE FROM room_members WHERE room = ? AND username = ?", (room_name, author))
+                # If owner left, transfer to oldest member or delete room
+                if member["role"] == "owner":
+                    next_member = db.execute("SELECT username FROM room_members WHERE room = ? ORDER BY joined_at ASC LIMIT 1", (room_name,)).fetchone()
+                    if next_member:
+                        db.execute("UPDATE room_members SET role = 'owner' WHERE room = ? AND username = ?", (room_name, next_member["username"]))
+                        db.execute("UPDATE channels SET owner = ? WHERE name = ?", (next_member["username"], room_name))
+                    else:
+                        # No members left — delete room
+                        db.execute("DELETE FROM messages WHERE channel = ?", (room_name,))
+                        db.execute("DELETE FROM invites WHERE room = ?", (room_name,))
+                        db.execute("DELETE FROM channels WHERE name = ?", (room_name,))
+                db.commit()
+            finally:
+                db.close()
+            cache_remove_member(room_name, author)
+            self.send_json({"ok": True})
+            return
+
+        # API: invite to a room (owner only)
+        if path.startswith("/api/channel/") and path.endswith("/invite"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                room, access = check_room_access(db, room_name, author)
+                if room is None or access != "owner":
+                    self.send_json({"ok": False, "error": "bara agaren kan bjuda in"}, 403)
+                    return
+
+                invitee = body.get("username", "").strip()
+                generate_code = body.get("generate_code", False)
+
+                if invitee:
+                    # Direct invite: add to members
+                    user_exists = db.execute("SELECT username FROM users WHERE username = ?", (invitee,)).fetchone()
+                    if not user_exists:
+                        self.send_json({"ok": False, "error": "anvandaren finns inte"}, 404)
+                        return
+                    db.execute(
+                        "INSERT OR IGNORE INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        (room_name, invitee, now())
+                    )
+                    db.commit()
+                    cache_add_member(room_name, invitee)
+                    # Notify via SSE
+                    broadcast({"event_type": "invited", "room": room_name, "username": invitee, "display_name": room.get("display_name", room_name) if isinstance(room, dict) else room_name})
+                    self.send_json({"ok": True, "invited": invitee})
+                    return
+
+                if generate_code:
+                    # Check invite limit
+                    invite_count = db.execute("SELECT COUNT(*) as c FROM invites WHERE room = ?", (room_name,)).fetchone()["c"]
+                    if invite_count >= 10:
+                        self.send_json({"ok": False, "error": "max 10 inbjudningskoder per rum"}, 400)
+                        return
+                    code = uuid.uuid4().hex[:16]
+                    uses = int(body.get("uses", 10))
+                    db.execute(
+                        "INSERT INTO invites (code, room, created_by, created_at, uses_left) VALUES (?, ?, ?, ?, ?)",
+                        (code, room_name, author, now(), uses)
+                    )
+                    db.commit()
+                    self.send_json({"ok": True, "code": code, "uses": uses})
+                    return
+
+                self.send_json({"ok": False, "error": "ange username eller generate_code"}, 400)
+            finally:
+                db.close()
+            return
+
+        # API: accept an invite code
+        if path.startswith("/api/invite/") and path.endswith("/accept"):
+            parts = path.split("/")
+            code = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                invite = db.execute("SELECT * FROM invites WHERE code = ?", (code,)).fetchone()
+                if not invite:
+                    self.send_json({"ok": False, "error": "ogiltig inbjudningskod"}, 404)
+                    return
+                if invite["uses_left"] == 0:
+                    self.send_json({"ok": False, "error": "inbjudningskoden har forbrukats"}, 410)
+                    return
+                room_name = invite["room"]
+                # Add member
+                db.execute(
+                    "INSERT OR IGNORE INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                    (room_name, author, now())
+                )
+                # Decrement uses
+                if invite["uses_left"] > 0:
+                    new_uses = invite["uses_left"] - 1
+                    if new_uses <= 0:
+                        db.execute("DELETE FROM invites WHERE code = ?", (code,))
+                    else:
+                        db.execute("UPDATE invites SET uses_left = ? WHERE code = ?", (new_uses, code))
+                db.commit()
+            finally:
+                db.close()
+            cache_add_member(room_name, author)
+            self.send_json({"ok": True, "room": room_name})
+            return
+
+        # API: kick member (owner only)
+        if path.startswith("/api/channel/") and path.endswith("/kick"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            target = body.get("username", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            if not target or target == author:
+                self.send_json({"ok": False, "error": "ogiltig anvandare"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                room, access = check_room_access(db, room_name, author)
+                if room is None or access != "owner":
+                    self.send_json({"ok": False, "error": "bara agaren kan kicka"}, 403)
+                    return
+                db.execute("DELETE FROM room_members WHERE room = ? AND username = ?", (room_name, target))
+                db.commit()
+            finally:
+                db.close()
+            cache_remove_member(room_name, target)
+            broadcast({"event_type": "kicked", "room": room_name, "username": target})
+            self.send_json({"ok": True, "kicked": target})
+            return
+
+        # API: list room members
+        if path.startswith("/api/channel/") and path.endswith("/members"):
+            parts = path.split("/")
+            room_name = parts[3]
+            req_user = params.get("user", [None])[0] if hasattr(params, 'get') else None
+            # For POST, get from body
+            if not req_user:
+                req_user = body.get("author", "")
+                req_token = body.get("token", "")
+            else:
+                req_token = params.get("token", [None])[0]
+            auth_user = None
+            if req_user and req_token:
+                db_v = get_db()
+                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                db_v.close()
+                if valid:
+                    auth_user = req_user
+            db = get_db()
+            room, access = check_room_access(db, room_name, auth_user)
+            if room is None:
+                db.close()
+                self.send_error(404)
+                return
+            members = [dict(r) for r in db.execute("SELECT username, role, joined_at FROM room_members WHERE room = ? ORDER BY joined_at", (room_name,)).fetchall()]
+            db.close()
+            self.send_json({"ok": True, "room": room_name, "members": members})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)
@@ -857,6 +1323,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 if __name__ == "__main__":
     init_db()
+    load_caches()
     server = ThreadedHTTPServer((HOST, PORT), ChatHandler)
     print(f"Cortex Chat running on http://{HOST}:{PORT}")
     print(f"Share with friends: open the URL above")
