@@ -160,11 +160,17 @@ from queue import Queue, Empty
 # --- HTTP Handler ---
 
 class ChatHandler(BaseHTTPRequestHandler):
+    def real_ip(self):
+        """Get real client IP — respects X-Forwarded-For from reverse proxies (Render, Cloudflare)."""
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else "unknown"
+
     def log_message(self, format, *args):
-        # Log requests but skip SSE keepalives
         if args and '/api/events' not in str(args[0]):
             import sys
-            sys.stderr.write(f"{self.client_address[0]} - {format % args}\n")
+            sys.stderr.write(f"{self.real_ip()} - {format % args}\n")
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -294,8 +300,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             q = Queue()
             sse_user = params.get("user", ["anonymous"])[0][:20]
-            client_ip = self.client_address[0] if self.client_address else ""
-            touch_online(sse_user, client_ip, "connected")
+            touch_online(sse_user, self.real_ip(), "connected")
             with sse_lock:
                 if len(sse_clients) >= MAX_SSE_CLIENTS:
                     self.send_error(503)
@@ -327,7 +332,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # Rate limit
-        client_ip = self.client_address[0] if self.client_address else "unknown"
+        client_ip = self.real_ip()
         if not check_rate_limit(client_ip):
             self.send_json({"ok": False, "error": "rate limited"}, 429)
             return
