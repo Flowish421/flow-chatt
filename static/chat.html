@@ -727,6 +727,11 @@ async function loadChannels() {
     const url = '/api/channels?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken);
     const data = await fetch(url).then(r => r.json());
     channelData = data.channels || [];
+    // Update online count
+    const connInfo = document.getElementById('conn-info');
+    if (data.online_count !== undefined) {
+      document.getElementById('user-display').textContent = username + '  \u00b7  ' + data.online_count + ' online';
+    }
     const list = document.getElementById('channel-list');
     list.innerHTML = '';
 
@@ -1113,10 +1118,21 @@ function openLightbox(src) {
 }
 
 // === SSE ===
+let _sseReconnectAttempt = 0;
+
 function connectSSE() {
   if (eventSource) { try { eventSource.close(); } catch(e) {} }
   eventSource = new EventSource('/api/events?user=' + encodeURIComponent(username));
   window._sseAlive = Date.now();
+
+  eventSource.onopen = () => {
+    _sseReconnectAttempt = 0;
+    // Reload messages to catch anything missed during disconnect
+    if (currentChannel && currentRoomAccess !== 'locked') {
+      loadMessages(currentChannel);
+    }
+  };
+
   eventSource.onmessage = (e) => {
     window._sseAlive = Date.now();
     try {
@@ -1163,13 +1179,17 @@ function connectSSE() {
     } catch(err) {}
   };
   eventSource.onerror = () => {
-    console.log('SSE error, will auto-reconnect...');
+    _sseReconnectAttempt++;
+    const delay = Math.min(1000 * Math.pow(2, _sseReconnectAttempt), 30000);
+    console.log('SSE error, reconnecting in ' + (delay/1000) + 's...');
+    setTimeout(connectSSE, delay);
   };
   // Keepalive check — reconnect if no data in 30s (server pings every 15s)
   clearInterval(window._sseCheck);
   window._sseCheck = setInterval(() => {
     if (Date.now() - (window._sseAlive || 0) > 30000) {
       console.log('SSE stale, reconnecting...');
+      _sseReconnectAttempt++;
       connectSSE();
     }
   }, 10000);

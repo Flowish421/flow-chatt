@@ -523,7 +523,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                     ch["topic"] = ""
                 channels.append(ch)
 
-            self.send_json({"ok": True, "channels": channels})
+            # Count unique online SSE users
+            with sse_lock:
+                online_names = set(c[2] for c in sse_clients if len(c) > 2 and c[2] != "anonymous")
+            self.send_json({"ok": True, "channels": channels, "online_count": len(online_names)})
             return
 
         # API: messages for a channel (access controlled)
