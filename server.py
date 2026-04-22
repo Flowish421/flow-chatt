@@ -52,6 +52,17 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel, created_at)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reactions (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            author TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(message_id, emoji, author)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_react_msg ON reactions(message_id)")
     # Seed default channel
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, created_by, created_at)
@@ -67,6 +78,25 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+# --- Rate limiting ---
+rate_limits = {}  # ip -> [timestamps]
+rate_lock = threading.Lock()
+MAX_REQUESTS_PER_MIN = 60
+MAX_SSE_CLIENTS = 100
+
+def check_rate_limit(ip):
+    """Returns True if allowed, False if rate limited."""
+    now_t = time.time()
+    with rate_lock:
+        if ip not in rate_limits:
+            rate_limits[ip] = []
+        # Prune old entries
+        rate_limits[ip] = [t for t in rate_limits[ip] if now_t - t < 60]
+        if len(rate_limits[ip]) >= MAX_REQUESTS_PER_MIN:
+            return False
+        rate_limits[ip].append(now_t)
+        return True
 
 # --- SSE Clients ---
 
@@ -106,13 +136,24 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_html(self, path):
+        # Path traversal protection: resolve and verify it stays within static/
         try:
-            content = Path(path).read_bytes()
+            resolved = Path(path).resolve()
+            allowed = Path("static").resolve()
+            if not str(resolved).startswith(str(allowed)):
+                self.send_error(403)
+                return
+            content = resolved.read_bytes()
             self.send_response(200)
             ctype = "text/html" if path.endswith(".html") else "text/css" if path.endswith(".css") else "application/javascript"
             self.send_header("Content-Type", f"{ctype}; charset=utf-8")
             self.send_header("Content-Length", len(content))
             self.send_header("Cache-Control", "no-store")
+            # Security headers
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-XSS-Protection", "1; mode=block")
             self.end_headers()
             self.wfile.write(content)
         except FileNotFoundError:
@@ -155,12 +196,29 @@ class ChatHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/channel/") and path.endswith("/messages"):
             parts = path.split("/")
             channel = parts[3]
-            limit = int(params.get("limit", ["100"])[0])
+            try:
+                limit = min(int(params.get("limit", ["100"])[0]), 500)
+            except (ValueError, IndexError):
+                limit = 100
             db = get_db()
             rows = db.execute(
                 "SELECT * FROM messages WHERE channel = ? ORDER BY created_at DESC LIMIT ?",
                 (channel, limit)
             ).fetchall()
+            msg_ids = [r["id"] for r in rows]
+            # Fetch reactions for all messages in one query
+            react_map = {}
+            if msg_ids:
+                placeholders = ",".join("?" * len(msg_ids))
+                reacts = db.execute(
+                    f"SELECT message_id, emoji, author FROM reactions WHERE message_id IN ({placeholders})",
+                    msg_ids
+                ).fetchall()
+                for rx in reacts:
+                    mid = rx["message_id"]
+                    if mid not in react_map:
+                        react_map[mid] = []
+                    react_map[mid].append({"emoji": rx["emoji"], "author": rx["author"]})
             db.close()
             messages = []
             for r in rows:
@@ -169,6 +227,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     m["attachments"] = json.loads(m.get("attachments") or "[]")
                 except:
                     m["attachments"] = []
+                m["reactions"] = react_map.get(m["id"], [])
                 messages.append(m)
             self.send_json({
                 "ok": True,
@@ -189,6 +248,9 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             q = Queue()
             with sse_lock:
+                if len(sse_clients) >= MAX_SSE_CLIENTS:
+                    self.send_error(503)
+                    return
                 sse_clients.append((q, None))
 
             try:
@@ -215,6 +277,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        # Rate limit
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        if not check_rate_limit(client_ip):
+            self.send_json({"ok": False, "error": "rate limited"}, 429)
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -222,16 +290,20 @@ class ChatHandler(BaseHTTPRequestHandler):
         if content_length > MAX_BODY:
             self.send_json({"ok": False, "error": "payload too large (max 10MB)"}, 413)
             return
-        body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
+        try:
+            body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
 
         # API: send message
         if path.startswith("/api/channel/") and path.endswith("/message"):
             parts = path.split("/")
-            channel = parts[3]
-            content = body.get("content", "").strip()
-            author = body.get("author", "anonymous").strip()
+            channel = parts[3][:50]  # limit channel name length
+            content = body.get("content", "").strip()[:5000]  # limit message length
+            author = body.get("author", "anonymous").strip()[:20]  # limit username
             role = body.get("role", "user")
-            attachments = body.get("attachments", [])
+            attachments = body.get("attachments", [])[:10]  # max 10 attachments
 
             if not content and not attachments:
                 self.send_json({"ok": False, "error": "empty message"}, 400)
@@ -289,6 +361,54 @@ class ChatHandler(BaseHTTPRequestHandler):
             db.commit()
             db.close()
             self.send_json({"ok": True, "channel": name})
+            return
+
+        # API: react to a message — POST /api/message/:id/react { emoji, author }
+        if path.startswith("/api/message/") and path.endswith("/react"):
+            parts = path.split("/")
+            message_id = parts[3]
+            emoji = body.get("emoji", "").strip()
+            author = body.get("author", "anonymous").strip()
+
+            if not emoji:
+                self.send_json({"ok": False, "error": "emoji required"}, 400)
+                return
+
+            db = get_db()
+            # Toggle: if already reacted with same emoji, remove it
+            existing = db.execute(
+                "SELECT id FROM reactions WHERE message_id = ? AND emoji = ? AND author = ?",
+                (message_id, emoji, author)
+            ).fetchone()
+
+            if existing:
+                db.execute("DELETE FROM reactions WHERE id = ?", (existing["id"],))
+                action = "removed"
+            else:
+                react_id = str(uuid.uuid4())
+                db.execute(
+                    "INSERT INTO reactions (id, message_id, emoji, author, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (react_id, message_id, emoji, author, now())
+                )
+                action = "added"
+            db.commit()
+
+            # Get updated reactions for this message
+            reacts = db.execute(
+                "SELECT emoji, author FROM reactions WHERE message_id = ?",
+                (message_id,)
+            ).fetchall()
+            db.close()
+
+            react_list = [{"emoji": rx["emoji"], "author": rx["author"]} for rx in reacts]
+
+            broadcast({
+                "event_type": "reaction",
+                "message_id": message_id,
+                "reactions": react_list,
+            })
+
+            self.send_json({"ok": True, "action": action, "reactions": react_list})
             return
 
         # API: delete channel

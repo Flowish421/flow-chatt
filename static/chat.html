@@ -167,6 +167,64 @@ body {
 }
 #send-btn:hover { opacity: 0.85; }
 
+/* Reactions */
+.msg-reactions {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; padding-left: 60px;
+}
+.reaction-pill {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 8px; border-radius: 12px; font-size: 13px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  cursor: pointer; user-select: none; transition: all 0.15s;
+}
+.reaction-pill:hover { border-color: var(--accent); background: var(--bg-surface); }
+.reaction-pill.mine { border-color: var(--accent); background: rgba(79,143,247,0.12); }
+.reaction-pill .r-count {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);
+}
+.react-add-btn {
+  display: inline-flex; align-items: center; padding: 2px 6px;
+  border-radius: 12px; font-size: 12px;
+  background: none; border: 1px dashed var(--border);
+  cursor: pointer; color: var(--text-muted); opacity: 0; transition: opacity 0.15s;
+}
+.msg:hover .react-add-btn { opacity: 1; }
+.react-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Emoji picker */
+#emoji-picker {
+  display: none; position: fixed; background: var(--bg-surface);
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: 8px; z-index: 200; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  max-width: 320px;
+}
+#emoji-picker.on { display: block; }
+#emoji-picker .ep-tabs {
+  display: flex; gap: 2px; margin-bottom: 6px; border-bottom: 1px solid var(--border); padding-bottom: 6px;
+}
+#emoji-picker .ep-tab {
+  padding: 4px 8px; border: none; background: none; font-size: 16px;
+  cursor: pointer; border-radius: 6px;
+}
+#emoji-picker .ep-tab:hover, #emoji-picker .ep-tab.active { background: var(--bg-elevated); }
+#emoji-picker .ep-grid {
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
+  max-height: 200px; overflow-y: auto;
+}
+#emoji-picker .ep-grid button {
+  font-size: 20px; padding: 4px; border: none; background: none;
+  cursor: pointer; border-radius: 6px; line-height: 1;
+}
+#emoji-picker .ep-grid button:hover { background: var(--bg-elevated); }
+#emoji-input-bar {
+  display: flex; gap: 2px; padding: 4px 0; flex-wrap: wrap;
+}
+#emoji-input-bar button {
+  font-size: 18px; padding: 2px 4px; border: none; background: none;
+  cursor: pointer; border-radius: 4px;
+}
+#emoji-input-bar button:hover { background: var(--bg-elevated); }
+
 /* Drag overlay */
 #drop-overlay {
   display: none; position: fixed; inset: 0; background: rgba(79,143,247,0.1);
@@ -176,22 +234,106 @@ body {
 }
 #drop-overlay.show { display: flex; }
 
+/* Login overlay */
+#login-overlay {
+  position: fixed; inset: 0; background: var(--bg-deep);
+  z-index: 500; display: flex; align-items: center; justify-content: center;
+}
+#login-overlay.hidden { display: none; }
+#login-box {
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 40px; text-align: center;
+  max-width: 380px; width: 90%;
+}
+#login-box h1 {
+  font-family: var(--font-mono); font-size: 24px; font-weight: 500;
+  margin-bottom: 8px; color: var(--accent);
+}
+#login-box p {
+  font-size: 13px; color: var(--text-secondary); margin-bottom: 24px;
+}
+#login-box input {
+  width: 100%; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text-primary); font-family: var(--font-mono);
+  font-size: 16px; padding: 12px 16px; outline: none; text-align: center;
+  margin-bottom: 16px;
+}
+#login-box input:focus { border-color: var(--accent); }
+#login-box input::placeholder { color: var(--text-muted); }
+#login-box button {
+  width: 100%; background: var(--accent); border: none; border-radius: 8px;
+  color: #000; font-family: var(--font-mono); font-weight: 600; font-size: 14px;
+  padding: 12px; cursor: pointer;
+}
+#login-box button:hover { opacity: 0.85; }
+#login-box button:disabled { opacity: 0.4; cursor: not-allowed; }
+#login-error {
+  font-size: 11px; color: var(--red); margin-top: 8px; min-height: 16px;
+  font-family: var(--font-mono);
+}
+
 /* Mobile */
 @media (max-width: 640px) {
-  #sidebar { width: 60px; }
+  body { flex-direction: column; }
+  #sidebar {
+    width: 100%; height: auto; max-height: 50px; border-right: none;
+    border-bottom: 1px solid var(--border); flex-direction: row;
+    align-items: center; overflow: hidden;
+  }
   #sidebar h2 { display: none; }
-  .ch-row .ch-name { font-size: 10px; }
+  #sidebar.expanded { max-height: 50vh; flex-direction: column; align-items: stretch; }
+  .channel-list {
+    display: flex; flex-direction: row; gap: 4px; padding: 4px 8px;
+    overflow-x: auto; white-space: nowrap;
+  }
+  #sidebar.expanded .channel-list { flex-direction: column; overflow-x: visible; }
+  .ch-row { padding: 4px 8px; font-size: 12px; flex-shrink: 0; }
   .ch-row .ch-del { display: none !important; }
-  #new-channel-btn { font-size: 16px; text-align: center; }
-  #conn-info { font-size: 8px; }
-  #messages { padding: 8px; }
-  .msg { font-size: 12px; }
-  .msg-images img { max-width: 200px; max-height: 160px; }
+  #new-channel-btn {
+    font-size: 14px; text-align: center; margin: 4px;
+    padding: 4px 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  #sidebar.expanded #new-channel-btn { margin: 8px; padding: 8px; }
+  #conn-info { display: none; }
+  #sidebar.expanded #conn-info { display: block; padding: 8px 14px; }
+  #main { flex: 1; min-height: 0; }
+  #messages { padding: 8px 12px; }
+  .msg { font-size: 12px; line-height: 1.5; padding: 2px 4px; }
+  .msg .time { font-size: 9px; margin-right: 4px; }
+  .msg .author { font-size: 11px; margin-right: 4px; }
+  .msg-images img { max-width: 220px; max-height: 180px; }
+  .msg-reactions { padding-left: 0; }
   #chat-header h1 { font-size: 13px; }
+  #chat-header {
+    padding: 8px 12px; cursor: pointer;
+  }
+  #input-area { padding: 8px 12px; gap: 6px; }
+  #msg-input { font-size: 14px; padding: 8px 10px; min-height: 38px; }
+  #send-btn { padding: 8px 12px; font-size: 11px; }
+  #emoji-input-bar { padding: 0 8px; }
+  #emoji-input-bar button { font-size: 16px; padding: 1px 2px; }
+  #attach-btn { padding: 7px 8px; font-size: 14px; }
+  #emoji-btn { padding: 7px 8px !important; font-size: 14px !important; }
+  #attach-preview { padding: 0 12px; }
+  .ap-thumb { width: 48px; height: 48px; }
+  #emoji-picker { max-width: 280px; }
+  #emoji-picker .ep-grid { grid-template-columns: repeat(7, 1fr); }
+  #lightbox img { max-width: 96vw; max-height: 80vh; }
 }
 </style>
 </head>
 <body>
+
+<div id="login-overlay">
+  <div id="login-box">
+    <h1>Flow Chatt</h1>
+    <p>Valj ett nickname for att borja chatta</p>
+    <input id="login-input" type="text" placeholder="Ditt nickname..." maxlength="20" autocomplete="off"
+      onkeydown="if(event.key==='Enter')doLogin()" oninput="validateNick()">
+    <button id="login-btn" onclick="doLogin()" disabled>Starta</button>
+    <div id="login-error"></div>
+  </div>
+</div>
 
 <div id="sidebar">
   <h2>Channels</h2>
@@ -210,17 +352,43 @@ body {
   </div>
   <div id="messages"></div>
   <div id="attach-preview"></div>
+  <div id="emoji-input-bar">
+    <button onclick="insertEmoji('😀')" title="glad">😀</button>
+    <button onclick="insertEmoji('😂')" title="skratt">😂</button>
+    <button onclick="insertEmoji('❤️')" title="hjarta">❤️</button>
+    <button onclick="insertEmoji('🔥')" title="eld">🔥</button>
+    <button onclick="insertEmoji('👍')" title="tumme upp">👍</button>
+    <button onclick="insertEmoji('👎')" title="tumme ner">👎</button>
+    <button onclick="insertEmoji('😎')" title="cool">😎</button>
+    <button onclick="insertEmoji('🎉')" title="fest">🎉</button>
+    <button onclick="insertEmoji('💀')" title="dod">💀</button>
+    <button onclick="insertEmoji('🤔')" title="tanker">🤔</button>
+    <button onclick="insertEmoji('😭')" title="grat">😭</button>
+    <button onclick="insertEmoji('🙏')" title="tack">🙏</button>
+  </div>
   <div id="input-area">
-    <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Bifoga bild">&#128206;</button>
+    <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Bifoga bild">📎</button>
     <input type="file" id="file-input" multiple accept="image/*" style="display:none" onchange="onFiles(this.files)">
+    <button id="emoji-btn" onclick="toggleEmojiPicker(event)" title="Emoji" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);padding:9px 10px;cursor:pointer;font-size:16px;line-height:1">😀</button>
     <textarea id="msg-input" placeholder="Skriv ett meddelande..." rows="1"
       onkeydown="handleKey(event)"></textarea>
     <button id="send-btn" onclick="send()">Skicka</button>
   </div>
 </div>
 
-<div id="lightbox" onclick="this.classList.remove('on')"><img id="lb-img"></div>
+<div id="lightbox" onclick="if(event.target===this)this.classList.remove('on')"><img id="lb-img"></div>
 <div id="drop-overlay">Slapp bilden har</div>
+<div id="emoji-picker">
+  <div class="ep-tabs">
+    <button class="ep-tab active" onclick="showEmojiTab('smileys',this)">😀</button>
+    <button class="ep-tab" onclick="showEmojiTab('hands',this)">👋</button>
+    <button class="ep-tab" onclick="showEmojiTab('hearts',this)">❤️</button>
+    <button class="ep-tab" onclick="showEmojiTab('objects',this)">🎉</button>
+    <button class="ep-tab" onclick="showEmojiTab('animals',this)">🐱</button>
+    <button class="ep-tab" onclick="showEmojiTab('food',this)">🍕</button>
+  </div>
+  <div class="ep-grid" id="ep-grid"></div>
+</div>
 
 <script>
 // === State ===
@@ -230,13 +398,63 @@ let eventSource = null;
 const seenIds = new Set();
 let lastDateShown = '';
 let pendingFiles = []; // [{dataUrl, name, size}]
+let emojiPickerMode = null; // null | 'input' | {msgId}
+const msgElements = new Map(); // msgId -> DOM element
+
+// === Emoji data ===
+const EMOJIS = {
+  smileys: ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗','😙','😚','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🥵','🥶','🥴','😵','🤯','🤠','🥳','🥸','😎','🤓','🧐','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','☠️','💩','🤡','👹','👺','👻','👽','👾','🤖'],
+  hands: ['👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','🖕','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','✍️','💪','🦾','🖖'],
+  hearts: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❤️‍🔥','❤️‍🩹','💕','💞','💓','💗','💖','💘','💝','💟'],
+  objects: ['🎉','🎊','🎈','🎁','🏆','🥇','🥈','🥉','⭐','🌟','💫','✨','🔥','💥','💯','🎵','🎶','🎸','🎮','🎯','🚀','💡','🔔','📣','💬','💭','🗯️','✅','❌','⚡','💤','🏴‍☠️','🍀'],
+  animals: ['🐱','🐶','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐔','🐧','🐦','🐤','🦆','🦅','🦉','🐴','🦄','🐝','🐛','🦋','🐌','🐞','🐙','🐠','🐬','🐳','🦈','🐊','🦕','🦖'],
+  food: ['🍕','🍔','🍟','🌭','🍿','🧁','🍰','🎂','🍩','🍪','🍫','🍬','🍭','🍮','🍯','🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🥝','🍒','🥑','🍆','🌶️','🌽','🥕','☕','🍵','🧃','🥤','🍺','🍷','🥂','🍾'],
+};
+const QUICK_REACTS = ['👍','❤️','😂','🔥','😮','😢','🎉','💯'];
 
 // === Init ===
 async function init() {
-  if (!username) {
-    username = prompt('Vad vill du heta i chatten?', '') || 'anon-' + Math.random().toString(36).slice(2, 6);
-    localStorage.setItem('cortex-chat-user', username);
+  // Check for saved username
+  if (username) {
+    document.getElementById('login-overlay').classList.add('hidden');
+    startChat();
+  } else {
+    // Show login screen, focus input
+    document.getElementById('login-input').focus();
   }
+}
+
+function validateNick() {
+  const input = document.getElementById('login-input');
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-error');
+  const v = input.value.trim();
+  if (v.length < 2) {
+    btn.disabled = true;
+    err.textContent = v.length > 0 ? 'Minst 2 tecken' : '';
+  } else if (v.length > 20) {
+    btn.disabled = true;
+    err.textContent = 'Max 20 tecken';
+  } else if (!/^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]+$/.test(v)) {
+    btn.disabled = true;
+    err.textContent = 'Bara bokstaver, siffror, - och _';
+  } else {
+    btn.disabled = false;
+    err.textContent = '';
+  }
+}
+
+function doLogin() {
+  const input = document.getElementById('login-input');
+  const v = input.value.trim();
+  if (v.length < 2 || v.length > 20) return;
+  username = v;
+  localStorage.setItem('cortex-chat-user', username);
+  document.getElementById('login-overlay').classList.add('hidden');
+  startChat();
+}
+
+async function startChat() {
   document.getElementById('user-display').textContent = username;
 
   const params = new URLSearchParams(location.search);
@@ -245,11 +463,18 @@ async function init() {
   await loadChannels();
   switchChannel(currentChannel);
   setupDragDrop();
+
+  // Mobile: toggle sidebar on header click
+  document.getElementById('chat-header').addEventListener('click', () => {
+    if (window.innerWidth <= 640) {
+      document.getElementById('sidebar').classList.toggle('expanded');
+    }
+  });
 }
 
 function changeName() {
   const n = prompt('Nytt namn:', username);
-  if (n && n.trim()) {
+  if (n && n.trim() && n.trim().length >= 2 && n.trim().length <= 20) {
     username = n.trim();
     localStorage.setItem('cortex-chat-user', username);
     document.getElementById('user-display').textContent = username;
@@ -326,7 +551,7 @@ async function loadMessages(channel) {
       msgs.forEach(m => {
         seenIds.add(m.id);
         addDateSeparator(m.created_at);
-        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || []);
+        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || [], m.id, m.reactions || []);
       });
     }
   } catch(e) {
@@ -349,11 +574,15 @@ function addDateSeparator(ts) {
   }
 }
 
-function appendMsg(author, content, role, timestamp, attachments) {
+function appendMsg(author, content, role, timestamp, attachments, msgId, reactions) {
   const el = document.getElementById('messages');
   const time = timestamp ? timestamp.substring(11, 16) : '';
   const div = document.createElement('div');
   div.className = 'msg role-' + role;
+  if (msgId) {
+    div.dataset.msgId = msgId;
+    msgElements.set(msgId, div);
+  }
 
   let html = `<span class="time">${time}</span><span class="author">${esc(author)}</span>`;
   if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
@@ -378,7 +607,61 @@ function appendMsg(author, content, role, timestamp, attachments) {
     if (imgWrap.children.length) div.appendChild(imgWrap);
   }
 
+  // Reactions row
+  const reactRow = document.createElement('div');
+  reactRow.className = 'msg-reactions';
+  if (msgId) reactRow.id = 'reacts-' + msgId;
+  renderReactions(reactRow, reactions || [], msgId);
+  div.appendChild(reactRow);
+
   el.appendChild(div);
+}
+
+function renderReactions(container, reactions, msgId) {
+  if (!container) return;
+  // Group by emoji
+  const groups = {};
+  (reactions || []).forEach(r => {
+    if (!groups[r.emoji]) groups[r.emoji] = [];
+    groups[r.emoji].push(r.author);
+  });
+
+  let html = '';
+  for (const [emoji, authors] of Object.entries(groups)) {
+    const mine = authors.includes(username) ? ' mine' : '';
+    const title = authors.join(', ');
+    html += `<span class="reaction-pill${mine}" onclick="react('${msgId}','${emoji}')" title="${esc(title)}">${emoji} <span class="r-count">${authors.length}</span></span>`;
+  }
+  if (msgId) {
+    html += `<span class="react-add-btn" onclick="openReactPicker(event,'${msgId}')" title="Reagera">+</span>`;
+  }
+  container.innerHTML = html;
+}
+
+async function react(msgId, emoji) {
+  if (!msgId) return;
+  try {
+    const res = await fetch('/api/message/' + msgId + '/react', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji, author: username }),
+    }).then(r => r.json());
+    if (res.ok) {
+      const container = document.getElementById('reacts-' + msgId);
+      renderReactions(container, res.reactions, msgId);
+    }
+  } catch(e) {}
+}
+
+function openReactPicker(event, msgId) {
+  event.stopPropagation();
+  emojiPickerMode = { msgId };
+  const picker = document.getElementById('emoji-picker');
+  const rect = event.target.getBoundingClientRect();
+  picker.style.left = Math.min(rect.left, window.innerWidth - 340) + 'px';
+  picker.style.top = Math.max(rect.top - 260, 8) + 'px';
+  picker.classList.add('on');
+  showEmojiTab('smileys', picker.querySelector('.ep-tab'));
 }
 
 function appendSystem(text) {
@@ -406,13 +689,19 @@ function connectSSE() {
   eventSource.onmessage = (e) => {
     try {
       const d = JSON.parse(e.data);
+      // Reaction update
+      if (d.event_type === 'reaction' && d.message_id) {
+        const container = document.getElementById('reacts-' + d.message_id);
+        if (container) renderReactions(container, d.reactions || [], d.message_id);
+        return;
+      }
       if (d.event_type !== 'chat_message') return;
       if (d.channel !== currentChannel) return;
       if (d.id && seenIds.has(d.id)) return;
       if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
       if (d.id) seenIds.add(d.id);
       addDateSeparator(d.created_at);
-      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || []);
+      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, []);
       scrollBottom();
       if (document.hidden && Notification.permission === 'granted') {
         new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
@@ -509,8 +798,9 @@ async function send() {
   renderPreview();
 
   // Optimistic render
+  const tempId = 'tmp-' + Date.now();
   addDateSeparator(new Date().toISOString());
-  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments);
+  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments, tempId, []);
   scrollBottom();
 
   try {
@@ -547,6 +837,58 @@ document.getElementById('msg-input').addEventListener('input', function() {
 if ('Notification' in window && Notification.permission === 'default') {
   Notification.requestPermission();
 }
+
+// === Emoji Picker ===
+function toggleEmojiPicker(event) {
+  event.stopPropagation();
+  const picker = document.getElementById('emoji-picker');
+  if (picker.classList.contains('on')) {
+    picker.classList.remove('on');
+    return;
+  }
+  emojiPickerMode = 'input';
+  const rect = event.target.getBoundingClientRect();
+  picker.style.left = Math.min(rect.left, window.innerWidth - 340) + 'px';
+  picker.style.top = (rect.top - 280) + 'px';
+  picker.classList.add('on');
+  showEmojiTab('smileys', picker.querySelector('.ep-tab'));
+}
+
+function showEmojiTab(tab, btn) {
+  const grid = document.getElementById('ep-grid');
+  const emojis = EMOJIS[tab] || [];
+  grid.innerHTML = emojis.map(e => `<button onclick="pickEmoji('${e}')">${e}</button>`).join('');
+  document.querySelectorAll('.ep-tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+function pickEmoji(emoji) {
+  if (emojiPickerMode === 'input') {
+    insertEmoji(emoji);
+  } else if (emojiPickerMode && emojiPickerMode.msgId) {
+    react(emojiPickerMode.msgId, emoji);
+  }
+  document.getElementById('emoji-picker').classList.remove('on');
+  emojiPickerMode = null;
+}
+
+function insertEmoji(emoji) {
+  const input = document.getElementById('msg-input');
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  input.value = input.value.substring(0, start) + emoji + input.value.substring(end);
+  input.selectionStart = input.selectionEnd = start + emoji.length;
+  input.focus();
+}
+
+// Close emoji picker on click outside
+document.addEventListener('click', (e) => {
+  const picker = document.getElementById('emoji-picker');
+  if (picker.classList.contains('on') && !picker.contains(e.target) && e.target.id !== 'emoji-btn') {
+    picker.classList.remove('on');
+    emojiPickerMode = null;
+  }
+});
 
 // === Helpers ===
 function esc(s) {
