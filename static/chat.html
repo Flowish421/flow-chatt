@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-src https://www.youtube.com;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://youtube.com;">
 <meta http-equiv="X-Frame-Options" content="DENY">
 <title>Flow Chatt</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -366,7 +366,7 @@ body {
 
 <div id="intro-overlay" style="display:none;position:fixed;inset:0;background:#000;z-index:600;align-items:center;justify-content:center;flex-direction:column">
   <div style="position:relative;width:350px;max-width:90%;aspect-ratio:9/16;border-radius:16px;overflow:hidden;box-shadow:0 0 60px rgba(79,143,247,0.3)">
-    <iframe id="intro-video" width="100%" height="100%" src="" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen style="border-radius:16px"></iframe>
+    <iframe id="intro-video" width="100%" height="100%" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="border-radius:16px;background:#000"></iframe>
   </div>
   <button id="skip-intro" onclick="finishIntro()" style="margin-top:20px;background:none;border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:rgba(255,255,255,0.5);font-family:var(--font-mono);font-size:12px;padding:8px 20px;cursor:pointer">Skippa</button>
 </div>
@@ -1220,7 +1220,7 @@ function showIntroVideo() {
   overlay.style.display = 'flex';
   const iframe = document.getElementById('intro-video');
   // YouTube Shorts embed — autoplay, no controls
-  iframe.src = 'https://www.youtube.com/embed/z1LsBYV8H1o?autoplay=1&mute=0&controls=0&rel=0&showinfo=0&modestbranding=1&playsinline=1';
+  iframe.src = 'https://www.youtube.com/embed/z1LsBYV8H1o?autoplay=1&mute=1&controls=1&rel=0&modestbranding=1&playsinline=1&loop=0';
 
   // Auto-skip after video duration (~60s for shorts, but we'll use message API to detect end)
   // YouTube iframe API not available without extra script, so use a timer
