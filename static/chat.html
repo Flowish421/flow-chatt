@@ -364,20 +364,6 @@ body {
   </div>
 </div>
 
-<div id="intro-overlay" style="display:none;position:fixed;inset:0;background:#000;z-index:600;align-items:center;justify-content:center;flex-direction:column">
-  <div id="intro-card" style="position:relative;width:350px;max-width:90%;aspect-ratio:9/16;border-radius:16px;overflow:hidden;box-shadow:0 0 60px rgba(79,143,247,0.3);background:#111;display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:pointer" onclick="window.open('https://www.youtube.com/shorts/z1LsBYV8H1o','_blank','width=400,height=720,menubar=no,toolbar=no')">
-    <img src="https://img.youtube.com/vi/z1LsBYV8H1o/0.jpg" alt="Intro video" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.6;border-radius:16px">
-    <div style="position:relative;z-index:1;text-align:center;padding:20px">
-      <div style="width:80px;height:80px;border-radius:50%;background:rgba(79,143,247,0.85);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;box-shadow:0 0 30px rgba(79,143,247,0.5)">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
-      </div>
-      <div style="font-family:var(--font-mono);font-size:14px;color:#fff;font-weight:500;margin-bottom:8px">Se introvideon</div>
-      <div style="font-family:var(--font-mono);font-size:11px;color:rgba(255,255,255,0.5)">Klicka for att oppna pa YouTube</div>
-    </div>
-  </div>
-  <div id="intro-countdown" style="margin-top:16px;font-family:var(--font-mono);font-size:12px;color:rgba(255,255,255,0.4)">Chatten oppnas om <span id="intro-seconds">30</span>s</div>
-  <button id="skip-intro" onclick="finishIntro()" style="margin-top:12px;background:none;border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:rgba(255,255,255,0.5);font-family:var(--font-mono);font-size:12px;padding:8px 20px;cursor:pointer">Skippa &rarr; borja chatta</button>
-</div>
 
 <div id="sidebar">
   <h2>Rum / Kanaler</h2>
@@ -1224,30 +1210,27 @@ document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.
 
 // === Intro Video ===
 function showIntroVideo() {
-  const overlay = document.getElementById('intro-overlay');
-  overlay.style.display = 'flex';
+  // Open YouTube video directly in popup — no extra clicks
+  const popup = window.open(
+    'https://www.youtube.com/shorts/z1LsBYV8H1o',
+    'flow-intro',
+    'width=400,height=720,menubar=no,toolbar=no,location=no,status=no'
+  );
 
-  // Countdown timer — gives user time to watch the video in the popup
-  let remaining = 30;
-  const countdownEl = document.getElementById('intro-seconds');
-  countdownEl.textContent = remaining;
-  window._introCountdown = setInterval(() => {
-    remaining--;
-    countdownEl.textContent = remaining;
-    if (remaining <= 0) finishIntro();
-  }, 1000);
-}
-
-function finishIntro() {
-  clearInterval(window._introCountdown);
-  const overlay = document.getElementById('intro-overlay');
-  overlay.style.transition = 'opacity 0.5s';
-  overlay.style.opacity = '0';
-  setTimeout(() => {
-    overlay.style.display = 'none';
-    overlay.style.opacity = '1';
-    startChat();
+  // Auto-close popup + enter chat after 30s (video length)
+  const check = setInterval(() => {
+    if (popup && popup.closed) {
+      clearInterval(check);
+      clearTimeout(timer);
+      startChat();
+    }
   }, 500);
+
+  const timer = setTimeout(() => {
+    clearInterval(check);
+    if (popup && !popup.closed) popup.close();
+    startChat();
+  }, 30000);
 }
 
 // === Ephemeral Mode ===
