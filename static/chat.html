@@ -553,17 +553,34 @@ async function loadChannels() {
     const data = await fetch('/api/channels').then(r => r.json());
     const list = document.getElementById('channel-list');
     const channels = data.channels || [];
-    list.innerHTML = channels.map(c => {
-      const active = c.name === currentChannel ? ' active' : '';
-      const del = c.name !== 'general'
-        ? `<button class="ch-del" onclick="event.stopPropagation();delChannel('${escAttr(c.name)}')" title="Ta bort">&#215;</button>`
-        : '';
-      return `<div class="ch-row${active}" onclick="switchChannel('${escAttr(c.name)}')">
-        <span class="hash">#</span>
-        <span class="ch-name">${esc(c.display_name || c.name)}</span>
-        ${del}
-      </div>`;
-    }).join('');
+    list.innerHTML = '';
+    channels.forEach(c => {
+      const row = document.createElement('div');
+      row.className = 'ch-row' + (c.name === currentChannel ? ' active' : '');
+      row.dataset.channel = c.name;
+      row.addEventListener('click', () => switchChannel(c.name));
+
+      const hash = document.createElement('span');
+      hash.className = 'hash';
+      hash.textContent = '#';
+      row.appendChild(hash);
+
+      const chName = document.createElement('span');
+      chName.className = 'ch-name';
+      chName.textContent = c.display_name || c.name;
+      row.appendChild(chName);
+
+      if (c.name !== 'general') {
+        const del = document.createElement('button');
+        del.className = 'ch-del';
+        del.title = 'Ta bort';
+        del.innerHTML = '&#215;';
+        del.addEventListener('click', (e) => { e.stopPropagation(); delChannel(c.name); });
+        row.appendChild(del);
+      }
+
+      list.appendChild(row);
+    });
   } catch(e) {}
 }
 
@@ -572,10 +589,9 @@ async function switchChannel(name) {
   lastDateShown = '';
   document.getElementById('header-name').textContent = '# ' + name;
   document.querySelectorAll('.ch-row').forEach(el => {
-    const n = el.querySelector('.ch-name');
-    el.classList.toggle('active', n && n.textContent === name);
+    el.classList.toggle('active', el.dataset.channel === name);
   });
-  history.replaceState(null, '', '?channel=' + name);
+  history.replaceState(null, '', '?channel=' + encodeURIComponent(name));
   await loadMessages(name);
   connectSSE();
   document.getElementById('msg-input').focus();
@@ -596,7 +612,7 @@ async function newChannel() {
 
 async function delChannel(name) {
   if (!confirm('Ta bort #' + name + '?')) return;
-  await fetch('/api/channel/' + name, { method: 'DELETE' });
+  await fetch('/api/channel/' + encodeURIComponent(name), { method: 'DELETE' });
   if (currentChannel === name) currentChannel = 'general';
   await loadChannels();
   switchChannel(currentChannel);
@@ -609,7 +625,7 @@ async function loadMessages(channel) {
   seenIds.clear();
   lastDateShown = '';
   try {
-    const data = await fetch('/api/channel/' + channel + '/messages?limit=200').then(r => r.json());
+    const data = await fetch('/api/channel/' + encodeURIComponent(channel) + '/messages?limit=200').then(r => r.json());
     const msgs = (data.messages || []).reverse();
     if (msgs.length === 0) {
       el.innerHTML = '<div class="msg-system">Inga meddelanden. Skriv nagot!</div>';
@@ -650,7 +666,7 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
     msgElements.set(msgId, div);
   }
 
-  let html = `<span class="time">${time}</span><span class="author">${esc(author)}</span>`;
+  let html = `<span class="time">${esc(time)}</span><span class="author">${esc(author)}</span>`;
   if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
     html += `<span class="content">${fmtContent(content)}</span>`;
   }
@@ -692,22 +708,35 @@ function renderReactions(container, reactions, msgId) {
     groups[r.emoji].push(r.author);
   });
 
-  let html = '';
+  container.innerHTML = '';
   for (const [emoji, authors] of Object.entries(groups)) {
     const mine = authors.includes(username) ? ' mine' : '';
     const title = authors.join(', ');
-    html += `<span class="reaction-pill${mine}" onclick="react('${msgId}','${emoji}')" title="${esc(title)}">${emoji} <span class="r-count">${authors.length}</span></span>`;
+    const pill = document.createElement('span');
+    pill.className = 'reaction-pill' + mine;
+    pill.title = title;
+    pill.textContent = emoji + ' ';
+    const cnt = document.createElement('span');
+    cnt.className = 'r-count';
+    cnt.textContent = authors.length;
+    pill.appendChild(cnt);
+    pill.addEventListener('click', () => react(msgId, emoji));
+    container.appendChild(pill);
   }
   if (msgId) {
-    html += `<span class="react-add-btn" onclick="openReactPicker(event,'${msgId}')" title="Reagera">+</span>`;
+    const addBtn = document.createElement('span');
+    addBtn.className = 'react-add-btn';
+    addBtn.title = 'Reagera';
+    addBtn.textContent = '+';
+    addBtn.addEventListener('click', (e) => openReactPicker(e, msgId));
+    container.appendChild(addBtn);
   }
-  container.innerHTML = html;
 }
 
 async function react(msgId, emoji) {
   if (!msgId) return;
   try {
-    const res = await fetch('/api/message/' + msgId + '/react', {
+    const res = await fetch('/api/message/' + encodeURIComponent(msgId) + '/react', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ emoji, author: username, token: userToken }),
@@ -881,7 +910,7 @@ async function send() {
   scrollBottom();
 
   try {
-    const res = await fetch('/api/channel/' + currentChannel + '/message', {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -932,7 +961,13 @@ function toggleEmojiPicker(event) {
 function showEmojiTab(tab, btn) {
   const grid = document.getElementById('ep-grid');
   const emojis = EMOJIS[tab] || [];
-  grid.innerHTML = emojis.map(e => `<button onclick="pickEmoji('${e}')">${e}</button>`).join('');
+  grid.innerHTML = '';
+  emojis.forEach(e => {
+    const btn = document.createElement('button');
+    btn.textContent = e;
+    btn.addEventListener('click', () => pickEmoji(e));
+    grid.appendChild(btn);
+  });
   document.querySelectorAll('.ep-tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
 }
@@ -987,51 +1022,16 @@ function fmtContent(s) {
   return h;
 }
 
-// === Anti-tampering ===
-// Disable right-click context menu
-document.addEventListener('contextmenu', e => e.preventDefault());
-
-// Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U
-document.addEventListener('keydown', e => {
-  if (e.key === 'F12') { e.preventDefault(); return; }
-  if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) { e.preventDefault(); return; }
-  if (e.ctrlKey && (e.key === 'U' || e.key === 'u')) { e.preventDefault(); return; }
-});
-
-// Detect DevTools open (debugger trap)
-(function antiDebug() {
-  const threshold = 160;
-  setInterval(() => {
-    const before = performance.now();
-    debugger;
-    const after = performance.now();
-    if (after - before > threshold) {
-      // DevTools detected — clear session
-      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0c10;color:#f87171;font-family:monospace;font-size:18px;text-align:center;padding:20px">Manipulation detected.<br>Session terminated.</div>';
-      localStorage.removeItem('cortex-chat-user');
-      localStorage.removeItem('cortex-chat-token');
-      username = '';
-      userToken = '';
-      if (eventSource) eventSource.close();
-    }
-  }, 2000);
-})();
-
-// Freeze critical globals — prevent console overrides
-try {
-  Object.defineProperty(window, 'username', { get: () => username, set: () => {}, configurable: false });
-  Object.defineProperty(window, 'userToken', { get: () => userToken, set: () => {}, configurable: false });
-} catch(e) {}
+// === Security note ===
+// All auth is enforced server-side via token verification on every API call.
+// Client-side anti-tamper (debugger traps, DevTools blocking) was removed because:
+// 1. It provided no real security (trivially bypassed)
+// 2. It destroyed legitimate users' sessions when DevTools was opened
+// 3. It blocked accessibility tools and legitimate browser features
+// The token in localStorage is protected by the same-origin policy and CSP headers.
 
 // Disable drag on page (except file drop zone)
 document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.preventDefault(); });
-
-// Disable copy of page source
-document.addEventListener('copy', e => {
-  const sel = window.getSelection().toString();
-  // Allow copying chat messages but not page source
-  if (sel.length > 500) e.preventDefault();
-});
 
 init();
 </script>

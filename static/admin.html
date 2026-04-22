@@ -153,7 +153,13 @@ async function doAdminLogin() {
   }
 }
 
-function logout() {
+async function logout() {
+  try {
+    await fetch('/api/admin/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+    });
+  } catch(e) { /* ignore */ }
   adminToken = '';
   sessionStorage.removeItem('admin-token');
   location.reload();
@@ -210,8 +216,8 @@ async function loadDashboard() {
         <td>${msgs}</td>
         <td>${isOn ? '<span style="color:var(--green)">Online</span>' : '<span style="color:var(--dim)">Offline</span>'}</td>
         <td>
-          <button class="btn-sm" onclick="kickUser('${esc(u.username)}')">Kicka</button>
-          <button class="btn-sm danger" onclick="deleteUser('${esc(u.username)}')">Radera</button>
+          <button class="btn-sm" onclick="kickUser('${escAttr(u.username)}')">Kicka</button>
+          <button class="btn-sm danger" onclick="deleteUser('${escAttr(u.username)}')">Radera</button>
         </td>
       </tr>`;
     }).join('');
@@ -263,6 +269,11 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
   return d.innerHTML;
+}
+
+function escAttr(s) {
+  // Escape for use inside HTML attribute values (single-quoted onclick etc.)
+  return esc(s).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
 }
 
 function fmtTime(iso) {
