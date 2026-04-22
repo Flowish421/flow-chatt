@@ -116,11 +116,12 @@ body {
 
 /* Delete button */
 .msg-del {
-  display: none; margin-left: 8px; cursor: pointer; font-size: 12px;
-  color: var(--text-muted); opacity: 0.5;
+  display: none; margin-left: 10px; cursor: pointer; font-size: 16px;
+  color: #f87171; opacity: 0.8; vertical-align: middle;
+  padding: 2px 4px; border-radius: 4px;
 }
-.msg:hover .msg-del { display: inline; }
-.msg-del:hover { opacity: 1; color: var(--red); }
+.msg:hover .msg-del { display: inline-block; }
+.msg-del:hover { opacity: 1; background: rgba(248,113,113,0.15); }
 
 /* Ephemeral messages */
 .msg-ephemeral {
