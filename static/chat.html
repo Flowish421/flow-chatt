@@ -1646,9 +1646,13 @@ async function checkInviteCode() {
 }
 
 // Handle SSE events for invites/kicks
-function handleRoomEvent(d) {
+async function handleRoomEvent(d) {
   if (d.event_type === 'invited' && d.username === username) {
-    loadChannels(); // New room appeared
+    await loadChannels();
+    // If user is currently looking at the locked view for this room, refresh it
+    if (currentChannel === d.room) {
+      switchChannel(d.room);
+    }
   }
   if (d.event_type === 'kicked' && d.username === username) {
     if (currentChannel === d.room) {

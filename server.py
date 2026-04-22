@@ -1269,7 +1269,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     db.commit()
                     cache_add_member(room_name, invitee)
                     # Notify via SSE
-                    broadcast({"event_type": "invited", "room": room_name, "username": invitee, "display_name": room.get("display_name", room_name) if isinstance(room, dict) else room_name})
+                    broadcast({"event_type": "invited", "room": room_name, "username": invitee, "display_name": room["display_name"] or room_name})
                     self.send_json({"ok": True, "invited": invitee})
                     return
 
