@@ -70,8 +70,7 @@ body {
   color: var(--text-muted); border-top: 1px solid var(--border);
 }
 #conn-info .dot { color: var(--green); }
-#conn-info .user-name { color: var(--accent); cursor: pointer; }
-#conn-info .user-name:hover { text-decoration: underline; }
+#conn-info .user-name { color: var(--accent); }
 
 /* Main */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -343,7 +342,7 @@ body {
   <button id="new-channel-btn" onclick="newChannel()">+ Ny kanal</button>
   <div id="conn-info">
     <span class="dot">&#9679;</span>
-    <span class="user-name" id="user-display" onclick="changeName()" title="Klicka for att byta namn"></span>
+    <span class="user-name" id="user-display" title="Ditt nickname (last)"></span>
   </div>
 </div>
 
@@ -415,45 +414,116 @@ const EMOJIS = {
 const QUICK_REACTS = ['👍','❤️','😂','🔥','😮','😢','🎉','💯'];
 
 // === Init ===
+let userToken = localStorage.getItem('cortex-chat-token') || '';
+
 async function init() {
-  // Check for saved username
-  if (username) {
-    document.getElementById('login-overlay').classList.add('hidden');
-    startChat();
-  } else {
-    // Show login screen, focus input
-    document.getElementById('login-input').focus();
+  // If we have saved credentials, verify them
+  if (username && userToken) {
+    try {
+      const res = await fetch('/api/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, token: userToken }),
+      }).then(r => r.json());
+      if (res.ok) {
+        document.getElementById('login-overlay').classList.add('hidden');
+        startChat();
+        return;
+      }
+    } catch(e) {}
+    // Token invalid — clear and show login
+    localStorage.removeItem('cortex-chat-user');
+    localStorage.removeItem('cortex-chat-token');
+    username = '';
+    userToken = '';
   }
+  // Show login screen
+  document.getElementById('login-input').focus();
 }
 
+let checkTimer = null;
 function validateNick() {
   const input = document.getElementById('login-input');
   const btn = document.getElementById('login-btn');
   const err = document.getElementById('login-error');
   const v = input.value.trim();
-  if (v.length < 2) {
-    btn.disabled = true;
-    err.textContent = v.length > 0 ? 'Minst 2 tecken' : '';
-  } else if (v.length > 20) {
-    btn.disabled = true;
-    err.textContent = 'Max 20 tecken';
-  } else if (!/^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]+$/.test(v)) {
-    btn.disabled = true;
+
+  btn.disabled = true;
+
+  if (v.length === 0) { err.textContent = ''; return; }
+  if (v.length < 2) { err.textContent = 'Minst 2 tecken'; return; }
+  if (v.length > 20) { err.textContent = 'Max 20 tecken'; return; }
+  if (!/^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]+$/.test(v)) {
     err.textContent = 'Bara bokstaver, siffror, - och _';
-  } else {
-    btn.disabled = false;
-    err.textContent = '';
+    return;
   }
+
+  err.textContent = 'Kollar...';
+  err.style.color = 'var(--text-muted)';
+
+  // Debounce server check
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/check-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: v }),
+      }).then(r => r.json());
+      // Only update if input hasn't changed
+      if (input.value.trim() !== v) return;
+      if (res.available) {
+        err.textContent = 'Tillgangligt!';
+        err.style.color = 'var(--green)';
+        btn.disabled = false;
+      } else {
+        err.textContent = 'Namnet ar redan taget';
+        err.style.color = 'var(--red)';
+        btn.disabled = true;
+      }
+    } catch(e) {
+      err.textContent = '';
+      btn.disabled = false; // Allow attempt, server will reject if taken
+    }
+  }, 400);
 }
 
-function doLogin() {
+async function doLogin() {
   const input = document.getElementById('login-input');
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-error');
   const v = input.value.trim();
   if (v.length < 2 || v.length > 20) return;
-  username = v;
-  localStorage.setItem('cortex-chat-user', username);
-  document.getElementById('login-overlay').classList.add('hidden');
-  startChat();
+
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: v }),
+    }).then(r => r.json());
+
+    if (res.ok) {
+      username = res.username;
+      userToken = res.token;
+      localStorage.setItem('cortex-chat-user', username);
+      localStorage.setItem('cortex-chat-token', userToken);
+      document.getElementById('login-overlay').classList.add('hidden');
+      startChat();
+    } else {
+      err.textContent = res.error || 'Kunde inte registrera';
+      err.style.color = 'var(--red)';
+      btn.disabled = false;
+      btn.textContent = 'Starta';
+    }
+  } catch(e) {
+    err.textContent = 'Serverfel, forsok igen';
+    err.style.color = 'var(--red)';
+    btn.disabled = false;
+    btn.textContent = 'Starta';
+  }
 }
 
 async function startChat() {
@@ -475,15 +545,6 @@ async function startChat() {
       document.getElementById('sidebar').classList.toggle('expanded');
     }
   });
-}
-
-function changeName() {
-  const n = prompt('Nytt namn:', username);
-  if (n && n.trim() && n.trim().length >= 2 && n.trim().length <= 20) {
-    username = n.trim();
-    localStorage.setItem('cortex-chat-user', username);
-    document.getElementById('user-display').textContent = username;
-  }
 }
 
 // === Channels ===

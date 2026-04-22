@@ -67,6 +67,13 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_react_msg ON reactions(message_id)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            token TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )
+    """)
     # Seed default channel
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, created_by, created_at)
@@ -305,6 +312,64 @@ class ChatHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             self.send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
+
+        # API: register username — POST /api/register { username }
+        # Returns a unique token. Username must be unique.
+        if path == "/api/register":
+            uname = body.get("username", "").strip()[:20]
+            if not uname or len(uname) < 2:
+                self.send_json({"ok": False, "error": "Namn maste vara 2-20 tecken"}, 400)
+                return
+            if not re.match(r'^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]{2,20}$', uname):
+                self.send_json({"ok": False, "error": "Bara bokstaver, siffror, - och _"}, 400)
+                return
+
+            token = uuid.uuid4().hex
+            db = get_db()
+            try:
+                db.execute(
+                    "INSERT INTO users (username, token, created_at) VALUES (?, ?, ?)",
+                    (uname, token, now())
+                )
+                db.commit()
+            except sqlite3.IntegrityError:
+                db.close()
+                self.send_json({"ok": False, "error": "Namnet ar redan taget"}, 409)
+                return
+            db.close()
+            self.send_json({"ok": True, "username": uname, "token": token})
+            return
+
+        # API: verify token — POST /api/verify { username, token }
+        if path == "/api/verify":
+            uname = body.get("username", "").strip()
+            token = body.get("token", "").strip()
+            if not uname or not token:
+                self.send_json({"ok": False, "error": "missing fields"}, 400)
+                return
+            db = get_db()
+            row = db.execute(
+                "SELECT username FROM users WHERE username = ? AND token = ?",
+                (uname, token)
+            ).fetchone()
+            db.close()
+            if row:
+                self.send_json({"ok": True, "username": uname})
+            else:
+                self.send_json({"ok": False, "error": "invalid token"}, 401)
+            return
+
+        # API: check if username is available — POST /api/check-name { username }
+        if path == "/api/check-name":
+            uname = body.get("username", "").strip()
+            if not uname:
+                self.send_json({"ok": False, "available": False})
+                return
+            db = get_db()
+            row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
+            db.close()
+            self.send_json({"ok": True, "available": row is None, "username": uname})
             return
 
         # API: send message
