@@ -36,19 +36,61 @@ CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via environment variable
 
-WELCOME_TEXT = """Valkommen till Flow Chatt!
+WELCOME_TEXT = """Valkomstguide till Flow Chatt
+---
 
-Hur det fungerar:
-- Offentliga rum: alla kan se och lasa. Klicka "Ga med" for att skriva.
-- Privata rum: bara inbjudna kan se och skriva. Skaparen bjuder in via namn eller kod.
-- Skapa rum: klicka "+ Skapa rum" i sidofaltet.
-- Emojis: klicka emoji-knappen eller reagera pa meddelanden med +
-- Bilder: klistra in, dra & slapp, eller klicka gem-ikonen.
+1. Vad ar Flow Chatt?
+Flow Chatt ar en chattapp i Discord-stil dar du kan skapa grupper, text- och voice-kanaler, bjuda in vanner och chatta i realtid.
 
-Regler:
-- Var schysst mot varandra
-- Inget spam
-- Admins kan kicka/radera konton
+---
+
+2. Skapa en grupp
+Klicka pa "+ Ny grupp" i sidofaltet. Valj ett namn, en beskrivning och om gruppen ska vara offentlig eller privat. Du blir automatiskt agare av gruppen.
+
+---
+
+3. Text- och voice-kanaler
+Inne i din grupp kan du skapa kanaler:
+- Textkanal: for vanlig chatt och meddelandehistorik.
+- Voice-kanal: for roststamtal i realtid.
+Klicka pa kugghjulet eller "+ Kanal" for att lagga till nya kanaler.
+
+---
+
+4. Bjud in vanner
+Du kan bjuda in vanner pa tva satt:
+- Direktinbjudan: skriv deras anvandarnamn sa laggs de till direkt.
+- Inbjudningslank: generera en kod som du delar. Koden kan anvandas ett bestamt antal ganger.
+
+---
+
+5. Roller: agare, admin, medlem
+- Agare: full kontroll over gruppen, kan ta bort den, andra roller och hantera kanaler.
+- Admin: kan skapa/ta bort kanaler, kicka medlemmar och hantera forfragningar.
+- Medlem: kan lasa och skriva i kanaler de har tillgang till.
+Agaren kan aven skapa egna roller med olika farger och behorighetskrav.
+
+---
+
+6. Voice chat
+Klicka pa en voice-kanal for att ga med i samtalet. Du ser vilka som ar med i kanalen. Klicka igen for att lamna.
+
+---
+
+7. Brusreducering
+I ljud-installningarna kan du sla pa och av brusreducering for att filtrera bort bakgrundsljud under voice-samtal.
+
+---
+
+8. Emojis och reaktioner
+Klicka pa emoji-knappen i chattfaltet for att lagga till emojis i ditt meddelande. Du kan aven reagera pa andras meddelanden genom att klicka + bredvid ett meddelande.
+
+---
+
+9. Privata kanaler och rollkrav
+Kanaler kan ha rollkrav sa att bara anvandare med en viss roll far skriva. Agare och admins har alltid tillgang. Privata grupper kraver inbjudan for att ga med.
+
+---
 
 Det har rummet ar skrivskyddat."""
 
@@ -188,12 +230,21 @@ def check_room_access(db, room_name, username=None):
         required_role = room["required_role"] if "required_role" in room.keys() else "member"
         if not required_role:
             required_role = "member"
+        # Owner and admin always bypass role requirements
+        if user_role in ("owner", "admin"):
+            return room, "owner" if user_role == "owner" else "write"
+        # Check built-in roles first
         if _group_role_level(user_role) >= _group_role_level(required_role):
-            if user_role == "owner":
-                return room, "owner"
             return room, "write"
-        else:
-            return room, "read"
+        # Check custom role: required_role might be a custom role ID
+        if required_role not in ("member", "admin", "owner"):
+            has_custom = db.execute(
+                "SELECT 1 FROM user_roles WHERE group_id = ? AND username = ? AND role_id = ?",
+                (group_id, username, required_role)
+            ).fetchone()
+            if has_custom:
+                return room, "write"
+        return room, "read"
 
     if vis == "system":
         return room, "system"
@@ -401,10 +452,34 @@ def init_db():
         conn.execute("ALTER TABLE invites ADD COLUMN group_id TEXT DEFAULT NULL")
     except sqlite3.OperationalError:
         pass
+    # --- Custom roles tables ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS group_roles (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            display_name TEXT,
+            color TEXT DEFAULT '#99aab5',
+            position INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            UNIQUE(group_id, name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_roles (
+            group_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            role_id TEXT NOT NULL,
+            assigned_at TEXT NOT NULL,
+            PRIMARY KEY (group_id, username, role_id)
+        )
+    """)
     # Group indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_channels_group ON channels(group_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(username)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_join_requests_group ON join_requests(group_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_group_roles_group ON group_roles(group_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_group ON user_roles(group_id, username)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -412,11 +487,13 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
-    # Seed the system room "allmant" (read-only instructions)
+    # Seed the system room "allmant" (Guide channel, read-only instructions)
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at)
-        VALUES ('allmant', 'Allmant', 'Instruktioner och regler', 'system', 'system', 'system', ?)
+        VALUES ('allmant', 'Guide', 'Hur man anvander Flow Chatt', 'system', 'system', 'system', ?)
     """, (now(),))
+    # Update display_name if it was previously 'Allmant' (migration for existing DBs)
+    conn.execute("UPDATE channels SET display_name = 'Guide', topic = 'Hur man anvander Flow Chatt' WHERE name = 'allmant' AND display_name = 'Allmant'")
     # Seed welcome message in allmant if empty
     existing = conn.execute("SELECT id FROM messages WHERE channel = 'allmant' LIMIT 1").fetchone()
     if not existing:
@@ -1169,6 +1246,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                         g["is_member"] = False
                     # Channels in this group (filtered by user's role)
                     ch_rows = db.execute("SELECT * FROM channels WHERE group_id = ? ORDER BY created_at", (gid,)).fetchall()
+                    # Voice state for this group's channels
+                    voice_rows = db.execute("SELECT channel, username FROM voice_state WHERE channel IN (SELECT name FROM channels WHERE group_id = ?)", (gid,)).fetchall()
+                    voice_map = {}
+                    for vr in voice_rows:
+                        voice_map.setdefault(vr["channel"], []).append(vr["username"])
+                    # Load user's custom roles for this group
+                    user_custom_role_ids = set()
+                    if authenticated_user:
+                        ur_rows = db.execute("SELECT role_id FROM user_roles WHERE group_id = ? AND username = ?", (gid, authenticated_user)).fetchall()
+                        user_custom_role_ids = {r["role_id"] for r in ur_rows}
                     channels = []
                     for ch in ch_rows:
                         chd = dict(ch)
@@ -1176,15 +1263,35 @@ class ChatHandler(BaseHTTPRequestHandler):
                         chd["required_role"] = chd.get("required_role", "member")
                         req_role = chd["required_role"] or "member"
                         user_role = g["user_role"]
-                        # If user has sufficient role, or channel is member-level, include it
-                        if user_role and _group_role_level(user_role) >= _group_role_level(req_role):
+                        # Owner/admin always have access
+                        if user_role in ("owner", "admin"):
                             chd["accessible"] = True
+                            chd["is_member"] = True
+                            chd["user_role"] = user_role
+                        # If user has sufficient built-in role level
+                        elif user_role and _group_role_level(user_role) >= _group_role_level(req_role):
+                            chd["accessible"] = True
+                            chd["is_member"] = True
+                            chd["user_role"] = user_role
+                        # Check custom role requirement
+                        elif req_role not in ("member", "admin", "owner") and req_role in user_custom_role_ids:
+                            chd["accessible"] = True
+                            chd["is_member"] = True
+                            chd["user_role"] = user_role
                         elif g["visibility"] == "public":
                             chd["accessible"] = False
+                            chd["is_member"] = False
+                            chd["user_role"] = None
                         else:
                             continue  # Private group, user doesn't have access to this channel
+                        # Voice channels: include who's in the room
+                        if chd["channel_type"] == "voice":
+                            chd["voice_members"] = voice_map.get(chd["name"], [])
                         channels.append(chd)
                     g["channels"] = channels
+                    # Include custom roles for this group
+                    role_rows = db.execute("SELECT id, name, display_name, color, position FROM group_roles WHERE group_id = ? ORDER BY position DESC", (gid,)).fetchall()
+                    g["roles"] = [dict(rr) for rr in role_rows]
                     groups.append(g)
 
                 # System channels (no group, visibility='system')
@@ -1209,6 +1316,22 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             self.send_json({"ok": True, "groups": groups, "system_channels": system_channels, "discover_groups": discover_groups, "online_count": online_count})
+            return
+
+        # API: list custom roles in group — GET /api/group/{id}/roles
+        if re.match(r'^/api/group/[a-f0-9]+/roles$', path):
+            group_id = path.split("/")[3]
+            db = get_db()
+            try:
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                rows = db.execute("SELECT id, name, display_name, color, position, created_at FROM group_roles WHERE group_id = ? ORDER BY position DESC", (group_id,)).fetchall()
+                roles = [dict(r) for r in rows]
+            finally:
+                db.close()
+            self.send_json({"ok": True, "roles": roles})
             return
 
         self.send_error(404)
@@ -2189,6 +2312,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     "INSERT INTO channels (name, display_name, topic, visibility, owner, channel_type, created_by, created_at, group_id, required_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (general_name, "General", "", "public", creator, "text", creator, ts, group_id, "member")
                 )
+                # Auto-create default custom roles
+                for role_name, role_display, role_color, role_pos in [("admin", "Admin", "#e74c3c", 2), ("medlem", "Medlem", "#99aab5", 1)]:
+                    db.execute(
+                        "INSERT INTO group_roles (id, group_id, name, display_name, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (uuid.uuid4().hex, group_id, role_name, role_display, role_color, role_pos, ts)
+                    )
                 db.commit()
             finally:
                 db.close()
@@ -2229,6 +2358,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                     db.execute("DELETE FROM voice_state WHERE channel = ?", (ch_name,))
                 db.execute("DELETE FROM channels WHERE group_id = ?", (group_id,))
                 db.execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
+                db.execute("DELETE FROM group_roles WHERE group_id = ?", (group_id,))
+                db.execute("DELETE FROM user_roles WHERE group_id = ?", (group_id,))
                 db.execute("DELETE FROM invites WHERE group_id = ?", (group_id,))
                 db.execute("DELETE FROM join_requests WHERE group_id = ?", (group_id,))
                 db.execute("DELETE FROM groups WHERE id = ?", (group_id,))
@@ -2358,7 +2489,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             if channel_type not in ("text", "voice"):
                 channel_type = "text"
             required_role = body.get("required_role", "member")
-            if required_role not in ("member", "admin", "owner"):
+            # Accept built-in roles or custom role IDs (hex strings)
+            if required_role not in ("member", "admin", "owner") and not re.match(r'^[a-f0-9]{32}$', required_role):
                 required_role = "member"
             creator = body.get("created_by", "").strip()[:20]
             token = body.get("token", "").strip()
@@ -2779,6 +2911,196 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             self.send_json({"ok": True, "requests": requests})
+            return
+
+        # ===== CUSTOM ROLES ENDPOINTS =====
+
+        # API: create custom role — POST /api/group/{id}/role
+        if re.match(r'^/api/group/[a-f0-9]+/role$', path):
+            group_id = path.split("/")[3]
+            role_name = body.get("name", "").strip().lower().replace(" ", "-")[:50]
+            if not role_name:
+                self.send_json({"ok": False, "error": "name required"}, 400)
+                return
+            role_display = body.get("display_name", role_name)[:100]
+            role_color = body.get("color", "#99aab5")[:10]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                if group["owner"] != author:
+                    self.send_json({"ok": False, "error": "bara agaren kan skapa roller"}, 403)
+                    return
+                # Check for duplicate name
+                if db.execute("SELECT 1 FROM group_roles WHERE group_id = ? AND name = ?", (group_id, role_name)).fetchone():
+                    self.send_json({"ok": False, "error": "rollen finns redan"}, 409)
+                    return
+                # Get max position
+                max_pos = db.execute("SELECT COALESCE(MAX(position), 0) as m FROM group_roles WHERE group_id = ?", (group_id,)).fetchone()["m"]
+                role_id = uuid.uuid4().hex
+                ts = now()
+                db.execute(
+                    "INSERT INTO group_roles (id, group_id, name, display_name, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (role_id, group_id, role_name, role_display, role_color, max_pos + 1, ts)
+                )
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "group_role_created", "group_id": group_id, "role_id": role_id, "name": role_name, "display_name": role_display, "color": role_color})
+            self.send_json({"ok": True, "role_id": role_id, "name": role_name, "display_name": role_display, "color": role_color})
+            return
+
+        # API: delete custom role — DELETE /api/group/{id}/role/{role_id}
+        if re.match(r'^/api/group/[a-f0-9]+/role/[a-f0-9]+$', path) and self.command == "DELETE":
+            parts = path.split("/")
+            group_id = parts[3]
+            role_id = parts[5]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                if group["owner"] != author:
+                    self.send_json({"ok": False, "error": "bara agaren kan ta bort roller"}, 403)
+                    return
+                role = db.execute("SELECT * FROM group_roles WHERE id = ? AND group_id = ?", (role_id, group_id)).fetchone()
+                if not role:
+                    self.send_json({"ok": False, "error": "rollen finns inte"}, 404)
+                    return
+                db.execute("DELETE FROM group_roles WHERE id = ?", (role_id,))
+                db.execute("DELETE FROM user_roles WHERE role_id = ?", (role_id,))
+                # Clear required_role on channels that referenced this role
+                db.execute("UPDATE channels SET required_role = 'member' WHERE group_id = ? AND required_role = ?", (group_id, role_id))
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "group_role_deleted", "group_id": group_id, "role_id": role_id})
+            self.send_json({"ok": True})
+            return
+
+        # API: assign role to user — POST /api/group/{id}/role/{role_id}/assign
+        if re.match(r'^/api/group/[a-f0-9]+/role/[a-f0-9]+/assign$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            role_id = parts[5]
+            target = body.get("username", "").strip()[:20]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            if not target:
+                self.send_json({"ok": False, "error": "username required"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Only owner or admin can assign roles
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm or gm["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare kan tilldela roller"}, 403)
+                    return
+                # Verify role exists
+                role = db.execute("SELECT * FROM group_roles WHERE id = ? AND group_id = ?", (role_id, group_id)).fetchone()
+                if not role:
+                    self.send_json({"ok": False, "error": "rollen finns inte"}, 404)
+                    return
+                # Verify target is a group member
+                target_member = db.execute("SELECT 1 FROM group_members WHERE group_id = ? AND username = ?", (group_id, target)).fetchone()
+                if not target_member:
+                    self.send_json({"ok": False, "error": "anvandaren ar inte medlem i gruppen"}, 404)
+                    return
+                ts = now()
+                db.execute(
+                    "INSERT OR IGNORE INTO user_roles (group_id, username, role_id, assigned_at) VALUES (?, ?, ?, ?)",
+                    (group_id, target, role_id, ts)
+                )
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "user_role_assigned", "group_id": group_id, "username": target, "role_id": role_id})
+            self.send_json({"ok": True, "username": target, "role_id": role_id})
+            return
+
+        # API: remove role from user — POST /api/group/{id}/role/{role_id}/remove
+        if re.match(r'^/api/group/[a-f0-9]+/role/[a-f0-9]+/remove$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            role_id = parts[5]
+            target = body.get("username", "").strip()[:20]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            if not target:
+                self.send_json({"ok": False, "error": "username required"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Only owner or admin can remove roles
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm or gm["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare kan ta bort roller"}, 403)
+                    return
+                db.execute("DELETE FROM user_roles WHERE group_id = ? AND username = ? AND role_id = ?", (group_id, target, role_id))
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "user_role_removed", "group_id": group_id, "username": target, "role_id": role_id})
+            self.send_json({"ok": True, "username": target, "role_id": role_id})
+            return
+
+        # API: list custom roles in group — GET/POST /api/group/{id}/roles
+        if re.match(r'^/api/group/[a-f0-9]+/roles$', path):
+            group_id = path.split("/")[3]
+            db = get_db()
+            try:
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                rows = db.execute("SELECT id, name, display_name, color, position, created_at FROM group_roles WHERE group_id = ? ORDER BY position DESC", (group_id,)).fetchall()
+                roles = [dict(r) for r in rows]
+            finally:
+                db.close()
+            self.send_json({"ok": True, "roles": roles})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)

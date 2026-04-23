@@ -305,6 +305,60 @@ body {
 }
 #emoji-input-bar button:hover { background: var(--bg-elevated); }
 
+/* Role badges */
+.role-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle;
+}
+.custom-role-badge {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-family: var(--font-mono); font-size: 9px; padding: 1px 6px;
+  border-radius: 8px; background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text-secondary); margin-left: 3px;
+}
+.role-section {
+  margin-bottom: 16px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.role-section h3 {
+  font-family: var(--font-mono); font-size: 11px; color: var(--accent);
+  margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px;
+}
+.role-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+}
+.role-create-form {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px;
+  background: var(--bg-elevated); border-radius: 6px; margin-top: 6px;
+}
+.role-create-form input, .role-create-form select {
+  background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-primary); font-family: var(--font-mono); font-size: 12px;
+  padding: 6px 8px; outline: none;
+}
+.role-create-form button {
+  background: var(--accent); border: none; border-radius: 4px;
+  color: #000; font-family: var(--font-mono); font-weight: 600; font-size: 11px;
+  padding: 6px 12px; cursor: pointer;
+}
+.role-toggle {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-family: var(--font-mono); font-size: 10px; padding: 2px 7px;
+  border-radius: 8px; cursor: pointer; border: 1px solid var(--border);
+  background: none; color: var(--text-muted); transition: all 0.15s;
+}
+.role-toggle.active {
+  border-color: var(--accent); background: rgba(79,143,247,0.12); color: var(--text-primary);
+}
+.role-toggle:hover { border-color: var(--text-muted); }
+
+.ch-gear {
+  display: none; background: none; border: none;
+  color: var(--text-muted); cursor: pointer; font-size: 11px;
+  padding: 2px 4px; border-radius: 3px; margin-left: auto;
+}
+.ch-row:hover .ch-gear { display: block; }
+.ch-gear:hover { color: var(--accent); background: var(--bg-deep); }
+
 /* Drag overlay */
 #drop-overlay {
   display: none; position: fixed; inset: 0; background: rgba(79,143,247,0.1);
@@ -448,12 +502,13 @@ body {
   .react-add-btn { opacity: 1 !important; }
 
   /* Modals */
-  #create-group-modal > div, #create-channel-modal > div, #settings-modal > div, #group-settings-modal > div {
+  #create-group-modal > div, #create-channel-modal > div, #settings-modal > div, #group-settings-modal > div, #channel-settings-modal > div {
     width: 95% !important; max-width: 95% !important;
     max-height: 85vh; overflow-y: auto;
   }
   .group-add-btn { display: block !important; }
   .group-settings-btn { display: block !important; }
+  .ch-gear { display: block !important; }
 }
 </style>
 </head>
@@ -483,7 +538,7 @@ body {
 
 <div id="main">
   <div id="chat-header">
-    <h1 id="header-name"># allmant</h1>
+    <h1 id="header-name"># Guide</h1>
     <div class="topic" id="header-topic"></div>
     <button class="header-btn" id="btn-settings" onclick="showRoomSettings()" style="display:none;font-size:16px;color:var(--accent);border-color:var(--accent)" title="Ruminstellningar / Bjud in">&#9881; Installningar</button>
     <button class="header-btn" id="btn-leave" onclick="leaveRoom()" style="display:none">Lamna</button>
@@ -602,6 +657,7 @@ body {
     <input type="hidden" id="gs-group-id">
     <div id="gs-members" style="margin-bottom:16px"></div>
     <div id="gs-requests" style="margin-bottom:16px"></div>
+    <div id="gs-roles" style="margin-bottom:16px"></div>
     <h3 style="font-family:var(--font-mono);font-size:12px;color:var(--accent);margin-bottom:10px;letter-spacing:1px">&#128233; Bjud in</h3>
     <div style="display:flex;gap:6px;margin-bottom:14px">
       <input id="gs-invite-name" type="text" placeholder="Skriv anvandarnamn..." style="flex:1;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;padding:10px 12px;outline:none">
@@ -613,6 +669,26 @@ body {
       <button onclick="document.getElementById('group-settings-modal').style.display='none'" style="flex:1;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:8px;cursor:pointer">Stang</button>
       <button onclick="leaveCurrentGroup()" style="background:none;border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-family:var(--font-mono);font-size:12px;padding:8px 12px;cursor:pointer">Lamna grupp</button>
       <button onclick="deleteCurrentGroup()" id="gs-delete-btn" style="background:none;border:1px solid var(--red);border-radius:6px;color:var(--red);font-family:var(--font-mono);font-size:12px;padding:8px 12px;cursor:pointer">Radera grupp</button>
+    </div>
+  </div>
+</div>
+
+<!-- Channel Settings Modal (per-channel role requirement) -->
+<div id="channel-settings-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center">
+  <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:360px;max-width:90%">
+    <h2 style="font-family:var(--font-mono);font-size:14px;margin-bottom:16px;color:var(--accent)">Kanalinstellningar</h2>
+    <input type="hidden" id="cs-channel-name">
+    <input type="hidden" id="cs-group-id">
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Rollkrav</label>
+      <p style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-bottom:8px">Valj vilken roll som kravs for att komma at kanalen. Agare/admin har alltid tillgang.</p>
+      <select id="cs-required-role" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:8px 12px;outline:none;cursor:pointer">
+        <option value="">Alla medlemmar</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="saveChannelSettings()" style="flex:1;background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:10px;cursor:pointer">Spara</button>
+      <button onclick="document.getElementById('channel-settings-modal').style.display='none'" style="flex:1;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:10px;cursor:pointer">Avbryt</button>
     </div>
   </div>
 </div>
@@ -989,8 +1065,8 @@ function makeGroupSection(group) {
   badge.textContent = group.member_count || 0;
   header.appendChild(badge);
 
-  // Gear icon for owner
-  if (group.user_role === 'owner') {
+  // Gear icon for owner/admin
+  if (group.user_role === 'owner' || group.user_role === 'admin') {
     const gearBtn = document.createElement('button');
     gearBtn.className = 'group-settings-btn';
     gearBtn.innerHTML = '&#9881;';
@@ -1090,6 +1166,19 @@ function makeChannelRow(c, type) {
     row.appendChild(badge);
   }
 
+  // Gear icon for channel settings (owner/admin in groups)
+  if (type === 'group' && c._group && (c._group.user_role === 'owner' || c._group.user_role === 'admin')) {
+    const gearBtn = document.createElement('button');
+    gearBtn.className = 'ch-gear';
+    gearBtn.innerHTML = '&#9881;';
+    gearBtn.title = 'Kanalinstellningar';
+    gearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showChannelSettings(c.name, c._group.id);
+    });
+    row.appendChild(gearBtn);
+  }
+
   return row;
 }
 
@@ -1119,6 +1208,19 @@ function makeVoiceRow(c) {
   chName.className = 'ch-name';
   chName.textContent = c.display_name || c.name;
   row.appendChild(chName);
+
+  // Gear icon for voice channel settings (owner/admin in groups)
+  if (c._group && (c._group.user_role === 'owner' || c._group.user_role === 'admin')) {
+    const gearBtn = document.createElement('button');
+    gearBtn.className = 'ch-gear';
+    gearBtn.innerHTML = '&#9881;';
+    gearBtn.title = 'Kanalinstellningar';
+    gearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showChannelSettings(c.name, c._group.id);
+    });
+    row.appendChild(gearBtn);
+  }
 
   const members = c.voice_members || [];
   if (members.length) {
@@ -1205,12 +1307,15 @@ async function switchChannel(name) {
   // Find channel info
   const ch = channelData.find(c => c.name === name) || {};
   const vis = ch.visibility || 'public';
-  const isMember = ch.is_member || false;
-  const isOwner = ch.user_role === 'owner';
 
   // Determine which group this channel belongs to
   const group = ch._group || null;
   currentGroup = group ? group.id : null;
+
+  // For group channels, inherit membership from group if not set on channel
+  const isMember = ch.is_member || (group && group.is_member) || false;
+  const userRole = ch.user_role || (group && group.user_role) || null;
+  const isOwner = userRole === 'owner';
 
   const isLocked = ch.locked && !isMember;
 
@@ -2021,7 +2126,7 @@ async function doCreateGroup() {
 }
 
 // --- Create Channel (within a group) ---
-function showCreateChannelModal(groupId) {
+async function showCreateChannelModal(groupId) {
   document.getElementById('create-channel-modal').style.display = 'flex';
   document.getElementById('cc-group-id').value = groupId;
   document.getElementById('cc-name').value = '';
@@ -2029,6 +2134,26 @@ function showCreateChannelModal(groupId) {
   document.getElementById('cc-role').value = 'member';
   document.getElementById('cc-text-label').style.borderColor = 'var(--accent)';
   document.getElementById('cc-voice-label').style.borderColor = 'var(--border)';
+
+  // Populate role dropdown with custom roles
+  const select = document.getElementById('cc-role');
+  // Keep base options, remove old custom ones
+  select.innerHTML = '<option value="member">Alla medlemmar</option><option value="admin">Admins</option><option value="owner">Owner</option>';
+  try {
+    const rolesRes = await fetch('/api/group/' + encodeURIComponent(groupId) + '/roles', {
+      headers: { 'Content-Type': 'application/json' },
+    }).then(r => r.json());
+    if (rolesRes.ok && rolesRes.roles) {
+      rolesRes.roles.forEach(role => {
+        const opt = document.createElement('option');
+        opt.value = role.id;
+        opt.textContent = role.name;
+        opt.style.color = role.color || '';
+        select.appendChild(opt);
+      });
+    }
+  } catch(e) {}
+
   document.getElementById('cc-name').focus();
 }
 
@@ -2132,6 +2257,18 @@ async function showGroupSettings(groupId) {
     document.getElementById('gs-members').innerHTML = '';
   }
 
+  // Load custom roles for this group (used in member list too)
+  let customRoles = [];
+  try {
+    const rolesRes = await fetch('/api/group/' + encodeURIComponent(groupId) + '/roles', {
+      headers: { 'Content-Type': 'application/json' },
+    }).then(r => r.json());
+    if (rolesRes.ok && rolesRes.roles) customRoles = rolesRes.roles;
+  } catch(e) {}
+
+  // Re-render member rows with custom role toggles
+  _renderMemberRoles(groupId, customRoles, isOwner);
+
   // Load pending join requests (for private groups)
   try {
     const res = await fetch('/api/group/' + encodeURIComponent(groupId) + '/requests', {
@@ -2167,6 +2304,268 @@ async function showGroupSettings(groupId) {
   } catch(e) {
     document.getElementById('gs-requests').innerHTML = '';
   }
+
+  // Render Roles section
+  _renderRolesSection(groupId, customRoles, isOwner);
+}
+
+// --- Role Management ---
+const ROLE_COLORS = [
+  { name: 'Rod', value: '#f87171' },
+  { name: 'Gron', value: '#34d399' },
+  { name: 'Bla', value: '#4f8ff7' },
+  { name: 'Gul', value: '#fbbf24' },
+  { name: 'Lila', value: '#a78bfa' },
+  { name: 'Orange', value: '#fb923c' },
+  { name: 'Rosa', value: '#f472b6' },
+  { name: 'Cyan', value: '#22d3ee' },
+];
+
+function _renderRolesSection(groupId, customRoles, isOwner) {
+  const el = document.getElementById('gs-roles');
+  el.innerHTML = '';
+
+  const section = document.createElement('div');
+  section.className = 'role-section';
+
+  const h3 = document.createElement('h3');
+  h3.textContent = 'Roller';
+  section.appendChild(h3);
+
+  if (customRoles.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-family:var(--font-mono);font-size:11px;color:var(--text-muted);padding:4px 0';
+    empty.textContent = 'Inga roller skapade';
+    section.appendChild(empty);
+  } else {
+    customRoles.forEach(role => {
+      const row = document.createElement('div');
+      row.className = 'role-row';
+
+      const dot = document.createElement('span');
+      dot.className = 'role-dot';
+      dot.style.background = role.color || '#888';
+      row.appendChild(dot);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.style.flex = '1';
+      nameSpan.textContent = role.name;
+      row.appendChild(nameSpan);
+
+      const countBadge = document.createElement('span');
+      countBadge.className = 'group-badge';
+      countBadge.textContent = (role.member_count || 0) + ' medl.';
+      row.appendChild(countBadge);
+
+      if (isOwner) {
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '\u2715';
+        delBtn.title = 'Radera roll';
+        delBtn.style.cssText = 'background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 6px';
+        delBtn.addEventListener('click', () => deleteCustomRole(groupId, role.id));
+        row.appendChild(delBtn);
+      }
+
+      section.appendChild(row);
+    });
+  }
+
+  // Create role form (owner only)
+  if (isOwner) {
+    const createBtn = document.createElement('button');
+    createBtn.textContent = '+ Skapa roll';
+    createBtn.style.cssText = 'background:none;border:1px dashed var(--border);border-radius:6px;color:var(--accent);font-family:var(--font-mono);font-size:11px;padding:6px 12px;cursor:pointer;margin-top:8px;width:100%';
+    createBtn.addEventListener('click', () => {
+      const existing = section.querySelector('.role-create-form');
+      if (existing) { existing.remove(); return; }
+      const form = document.createElement('div');
+      form.className = 'role-create-form';
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.placeholder = 'Rollnamn';
+      nameInput.maxLength = 30;
+      nameInput.style.flex = '1';
+      form.appendChild(nameInput);
+
+      const colorSelect = document.createElement('select');
+      ROLE_COLORS.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.value;
+        opt.textContent = c.name;
+        opt.style.color = c.value;
+        colorSelect.appendChild(opt);
+      });
+      form.appendChild(colorSelect);
+
+      const submitBtn = document.createElement('button');
+      submitBtn.textContent = 'Skapa';
+      submitBtn.addEventListener('click', async () => {
+        const rName = nameInput.value.trim();
+        if (!rName) return;
+        await createCustomRole(groupId, rName, colorSelect.value);
+      });
+      form.appendChild(submitBtn);
+
+      section.appendChild(form);
+      nameInput.focus();
+    });
+    section.appendChild(createBtn);
+  }
+
+  el.appendChild(section);
+}
+
+function _renderMemberRoles(groupId, customRoles, isOwner) {
+  // Add role toggle badges to each member row in gs-members
+  const el = document.getElementById('gs-members');
+  const rows = el.querySelectorAll('[data-member-name]');
+  rows.forEach(row => {
+    // Remove old role toggles
+    row.querySelectorAll('.member-custom-roles').forEach(e => e.remove());
+  });
+
+  // We need to rebuild member rows with role toggles. We do this by hooking into the existing
+  // rendered member list: find each member row and append role toggles.
+  // However, since the members are freshly rendered above, we need to tag them first.
+  // Instead, we wait for the member rows to exist and inject.
+  // The members are already rendered as child divs of gs-members.
+  const memberRows = el.querySelectorAll('div[style]');
+  // Skip the first child (the header label)
+  let memberIndex = 0;
+  memberRows.forEach(row => {
+    // Only target actual member rows (they have flex display and a nameSpan as first child)
+    if (!row.style.cssText.includes('display:flex')) return;
+    const nameSpan = row.querySelector('span[style*="flex"]');
+    if (!nameSpan) return;
+    const memberName = nameSpan.textContent;
+    if (!memberName) return;
+
+    // Tag row for future reference
+    row.dataset.memberName = memberName;
+
+    if (customRoles.length === 0) return;
+
+    // Add a custom roles container after the base role badge
+    const rolesWrap = document.createElement('div');
+    rolesWrap.className = 'member-custom-roles';
+    rolesWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;margin-top:2px;width:100%';
+
+    customRoles.forEach(role => {
+      const isAssigned = (role.members || []).includes(memberName);
+      const toggle = document.createElement('button');
+      toggle.className = 'role-toggle' + (isAssigned ? ' active' : '');
+      const dot = document.createElement('span');
+      dot.className = 'role-dot';
+      dot.style.background = role.color || '#888';
+      toggle.appendChild(dot);
+      toggle.appendChild(document.createTextNode(role.name));
+
+      if (isOwner) {
+        toggle.addEventListener('click', async () => {
+          const action = isAssigned ? 'remove' : 'assign';
+          await toggleMemberRole(groupId, role.id, memberName, action);
+        });
+      } else {
+        toggle.style.cursor = 'default';
+      }
+      rolesWrap.appendChild(toggle);
+    });
+
+    // Insert the roles wrap as a new line below the member row
+    row.style.flexWrap = 'wrap';
+    row.appendChild(rolesWrap);
+  });
+}
+
+async function createCustomRole(groupId, roleName, color) {
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(groupId) + '/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, name: roleName, color: color }),
+    }).then(r => r.json());
+    if (res.ok) {
+      showGroupSettings(groupId);
+    } else {
+      alert(res.error || 'Kunde inte skapa roll');
+    }
+  } catch(e) { alert('Serverfel'); }
+}
+
+async function deleteCustomRole(groupId, roleId) {
+  if (!confirm('Radera rollen?')) return;
+  try {
+    await fetch('/api/group/' + encodeURIComponent(groupId) + '/role/' + encodeURIComponent(roleId), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    });
+    showGroupSettings(groupId);
+  } catch(e) {}
+}
+
+async function toggleMemberRole(groupId, roleId, targetUser, action) {
+  try {
+    await fetch('/api/group/' + encodeURIComponent(groupId) + '/role/' + encodeURIComponent(roleId) + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, username: targetUser }),
+    });
+    showGroupSettings(groupId);
+  } catch(e) {}
+}
+
+// --- Channel Settings (role requirement per channel) ---
+async function showChannelSettings(channelName, groupId) {
+  document.getElementById('channel-settings-modal').style.display = 'flex';
+  document.getElementById('cs-channel-name').value = channelName;
+  document.getElementById('cs-group-id').value = groupId;
+
+  const select = document.getElementById('cs-required-role');
+  // Reset options
+  select.innerHTML = '<option value="">Alla medlemmar</option>';
+
+  // Fetch custom roles for this group
+  try {
+    const rolesRes = await fetch('/api/group/' + encodeURIComponent(groupId) + '/roles', {
+      headers: { 'Content-Type': 'application/json' },
+    }).then(r => r.json());
+    if (rolesRes.ok && rolesRes.roles) {
+      rolesRes.roles.forEach(role => {
+        const opt = document.createElement('option');
+        opt.value = role.id;
+        opt.textContent = role.name;
+        opt.style.color = role.color || '';
+        select.appendChild(opt);
+      });
+    }
+  } catch(e) {}
+
+  // Fetch current channel settings to pre-select
+  const ch = channelData.find(c => c.name === channelName);
+  if (ch && ch.required_role) {
+    select.value = ch.required_role;
+  }
+}
+
+async function saveChannelSettings() {
+  const channelName = document.getElementById('cs-channel-name').value;
+  const groupId = document.getElementById('cs-group-id').value;
+  const requiredRole = document.getElementById('cs-required-role').value;
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(groupId) + '/channel/' + encodeURIComponent(channelName) + '/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, required_role: requiredRole }),
+    }).then(r => r.json());
+    if (res.ok) {
+      document.getElementById('channel-settings-modal').style.display = 'none';
+      await loadChannels();
+    } else {
+      alert(res.error || 'Kunde inte spara');
+    }
+  } catch(e) { alert('Serverfel'); }
 }
 
 async function changeGroupMemberRole(groupId, target, newRole) {
