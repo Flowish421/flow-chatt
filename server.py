@@ -244,6 +244,8 @@ def check_room_access(db, room_name, username=None):
             ).fetchone()
             if has_custom:
                 return room, "write"
+            # User does NOT have the required custom role — hide channel entirely
+            return None, None
         return room, "read"
 
     if vis == "system":
@@ -480,6 +482,8 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_join_requests_group ON join_requests(group_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_group_roles_group ON group_roles(group_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_group ON user_roles(group_id, username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_author ON messages(author)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -711,8 +715,14 @@ class WebSocketConnection:
             if opcode == 0x1:  # Text
                 try:
                     msg = json.loads(payload.decode("utf-8"))
+                    # Typing indicator — broadcast to channel members, not stored
+                    if msg.get("type") == "typing":
+                        msg["from"] = self.username  # Force sender identity
+                        channel = msg.get("channel", "")
+                        if channel:
+                            broadcast({"event_type": "typing", "username": self.username, "channel": channel}, channel=channel)
                     # WebRTC signaling relay — send to specific user
-                    if msg.get("type") in ("call_offer", "call_answer", "ice_candidate", "call_reject", "call_hangup"):
+                    elif msg.get("type") in ("call_offer", "call_answer", "ice_candidate", "call_reject", "call_hangup"):
                         send_to_user(msg.get("to"), msg)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
@@ -855,8 +865,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token, Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Content-Length", len(body))
         self.end_headers()
         self.wfile.write(body)
@@ -904,7 +914,7 @@ class ChatHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.end_headers()
 
@@ -927,6 +937,17 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         if path == "/admin" or path == "/admin.html":
             self.send_html("static/admin.html")
+            return
+
+        # Favicon — inline SVG chat bubble to avoid 404 spam
+        if path == "/favicon.ico":
+            svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#5865F2"/><path d="M16 18h32a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H28l-8 8v-8h-4a4 4 0 0 1-4-4V22a4 4 0 0 1 4-4z" fill="#fff"/></svg>'
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", len(svg))
+            self.send_header("Cache-Control", "public, max-age=604800")
+            self.end_headers()
+            self.wfile.write(svg)
             return
 
         # WebSocket upgrade
@@ -1119,6 +1140,25 @@ class ChatHandler(BaseHTTPRequestHandler):
                         if mid not in react_map:
                             react_map[mid] = []
                         react_map[mid].append({"emoji": rx["emoji"], "author": rx["author"]})
+
+                # Build author roles map for this channel's group
+                author_roles_map = {}  # username -> [{"role_id", "name", "display_name", "color"}]
+                group_id = room["group_id"] if "group_id" in room.keys() else None
+                if group_id:
+                    unique_authors = set(r["author"] for r in rows)
+                    if unique_authors:
+                        role_defs = {}
+                        for gr in db.execute("SELECT id, name, display_name, color FROM group_roles WHERE group_id = ?", (group_id,)).fetchall():
+                            role_defs[gr["id"]] = {"role_id": gr["id"], "name": gr["name"], "display_name": gr["display_name"], "color": gr["color"]}
+                        auth_placeholders = ",".join("?" * len(unique_authors))
+                        ur_rows = db.execute(
+                            f"SELECT username, role_id FROM user_roles WHERE group_id = ? AND username IN ({auth_placeholders})",
+                            [group_id] + list(unique_authors)
+                        ).fetchall()
+                        for ur in ur_rows:
+                            rd = role_defs.get(ur["role_id"])
+                            if rd:
+                                author_roles_map.setdefault(ur["username"], []).append(rd)
             finally:
                 db.close()
             messages = []
@@ -1129,6 +1169,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 except:
                     m["attachments"] = []
                 m["reactions"] = react_map.get(m["id"], [])
+                m["author_roles"] = author_roles_map.get(m["author"], [])
                 messages.append(m)
             self.send_json({
                 "ok": True,
@@ -1278,6 +1319,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                             chd["accessible"] = True
                             chd["is_member"] = True
                             chd["user_role"] = user_role
+                        elif req_role not in ("member", "admin", "owner"):
+                            # Channel requires a custom role the user doesn't have — hide it
+                            continue
                         elif g["visibility"] == "public":
                             chd["accessible"] = False
                             chd["is_member"] = False
@@ -1298,6 +1342,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                 system_rows = db.execute("SELECT * FROM channels WHERE visibility = 'system' AND (group_id IS NULL OR group_id = '') ORDER BY created_at").fetchall()
                 system_channels = [dict(r) for r in system_rows]
 
+                # Compute online usernames for per-group online counts
+                online_info = get_online()
+                online_names_set = set(online_info.keys()) - {"anonymous"}
+                # Add online_count per group
+                for g in groups:
+                    gid = g["id"]
+                    with group_membership_lock:
+                        g_members = group_membership_cache.get(gid, set())
+                    g["online_count"] = len(online_names_set & g_members)
+
                 # Discover groups: public groups where user is NOT a member
                 discover_groups = []
                 if authenticated_user:
@@ -1312,7 +1366,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                         dg["member_count"] = db.execute("SELECT COUNT(*) as c FROM group_members WHERE group_id = ?", (dg["id"],)).fetchone()["c"]
                         discover_groups.append(dg)
 
-                online_count = len(get_online())
+                online_count = len(online_info)
             finally:
                 db.close()
             self.send_json({"ok": True, "groups": groups, "system_channels": system_channels, "discover_groups": discover_groups, "online_count": online_count})
@@ -1537,7 +1591,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         # API: send message (requires valid token)
         if path.startswith("/api/channel/") and path.endswith("/message"):
             parts = path.split("/")
-            channel = parts[3][:50]
+            channel = unquote(parts[3])[:50]
             if not re.match(r'^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$', channel):
                 self.send_json({"ok": False, "error": "invalid channel name"}, 400)
                 return
@@ -1969,7 +2023,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     return
                 # Access check: use check_room_access for full role/group verification
                 _, access = check_room_access(db, room_name, author)
-                if access is None or access in ("read", "locked"):
+                if access is None or access in ("read", "locked", "system"):
                     self.send_json({"ok": False, "error": "du har inte tillgang till den har kanalen"}, 403)
                     return
                 # Leave any other voice channel first
@@ -3146,32 +3200,6 @@ class ChatHandler(BaseHTTPRequestHandler):
                 db.close()
             broadcast({"event_type": "user_role_removed", "group_id": group_id, "username": target, "role_id": role_id})
             self.send_json({"ok": True, "username": target, "role_id": role_id})
-            return
-
-        # API: list custom roles in group — GET/POST /api/group/{id}/roles
-        if re.match(r'^/api/group/[a-f0-9]+/roles$', path):
-            group_id = path.split("/")[3]
-            db = get_db()
-            try:
-                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
-                if not group:
-                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
-                    return
-                rows = db.execute("SELECT id, name, display_name, color, position, created_at FROM group_roles WHERE group_id = ? ORDER BY position DESC", (group_id,)).fetchall()
-                roles = []
-                for r in rows:
-                    rd = dict(r)
-                    members = db.execute("SELECT username FROM user_roles WHERE group_id = ? AND role_id = ?", (group_id, rd["id"])).fetchall()
-                    rd["members"] = [m["username"] for m in members]
-                    roles.append(rd)
-                # Build user assignments map
-                user_assignments = {}
-                all_assignments = db.execute("SELECT username, role_id FROM user_roles WHERE group_id = ?", (group_id,)).fetchall()
-                for a in all_assignments:
-                    user_assignments.setdefault(a["username"], []).append(a["role_id"])
-            finally:
-                db.close()
-            self.send_json({"ok": True, "roles": roles, "user_assignments": user_assignments})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)
