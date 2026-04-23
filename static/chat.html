@@ -2049,10 +2049,11 @@ async function doCreateChannel() {
     if (res.ok) {
       document.getElementById('create-channel-modal').style.display = 'none';
       await loadChannels();
+      const channelName = res.channel || nameInput;
       if (chType === 'voice') {
-        joinVoiceChannel(nameInput);
+        joinVoiceChannel(channelName);
       } else {
-        switchChannel(nameInput);
+        switchChannel(channelName);
       }
     } else {
       alert(res.error || 'Kunde inte skapa kanal');
