@@ -567,8 +567,31 @@ body {
     <div style="font-family:var(--font-mono);font-size:13px;color:var(--green)" id="call-peer-name">Samtal</div>
     <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="call-timer">00:00</div>
   </div>
-  <button id="mute-btn" onclick="toggleMute()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Mute">🎤</button>
-  <button onclick="hangupCall()" style="background:var(--red);border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:#000" title="Lagg pa">✖</button>
+  <button id="mute-btn" onclick="toggleMute()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Mute">&#127897;</button>
+  <button onclick="showAudioSettings()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Ljud-installningar">&#9881;</button>
+  <button onclick="hangupCall()" style="background:var(--red);border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:#000" title="Lamna">&#10005;</button>
+</div>
+
+<!-- Audio Settings Modal -->
+<div id="audio-settings" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;align-items:center;justify-content:center">
+  <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:380px;max-width:90%">
+    <h2 style="font-family:var(--font-mono);font-size:14px;color:var(--accent);margin-bottom:16px">&#127897; Ljud-installningar</h2>
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Mikrofon</label>
+      <select id="mic-select" onchange="switchMicrophone()" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:10px;outline:none;cursor:pointer"></select>
+    </div>
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Hogtalare / Horlurar</label>
+      <select id="speaker-select" onchange="switchSpeaker()" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:10px;outline:none;cursor:pointer"></select>
+    </div>
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Mikrofon-niva</label>
+      <div id="mic-level-bar" style="height:6px;background:var(--bg-elevated);border-radius:3px;overflow:hidden">
+        <div id="mic-level" style="height:100%;width:0%;background:var(--green);transition:width 0.1s;border-radius:3px"></div>
+      </div>
+    </div>
+    <button onclick="document.getElementById('audio-settings').style.display='none'" style="width:100%;background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:13px;padding:10px;cursor:pointer">Stang</button>
+  </div>
 </div>
 
 <audio id="ringtone" loop preload="none"><source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" type="audio/wav"></audio>
@@ -1821,6 +1844,7 @@ async function handleRoomEvent(d) {
 // === Voice Channels (WebRTC mesh) ===
 let currentVoiceChannel = null;
 let voicePeers = {};  // {username: RTCPeerConnection}
+let voiceAudioElements = {};  // {username: HTMLAudioElement} — prevent GC
 let localVoiceStream = null;
 let voiceTimer = null;
 let voiceSeconds = 0;
@@ -1853,7 +1877,8 @@ async function joinVoiceChannel(channelName) {
   if (currentVoiceChannel) await leaveVoiceChannel();
 
   try {
-    localVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const audioConstraints = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+    localVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
   } catch(e) {
     alert('Kunde inte komma at mikrofonen. Tillat mikrofon i browsern.');
     return;
@@ -1896,10 +1921,23 @@ async function leaveVoiceChannel() {
 }
 
 function cleanupVoice() {
+  stopMicLevel();
   for (const [peer, pc] of Object.entries(voicePeers)) {
     pc.close();
   }
   voicePeers = {};
+  // Clean up audio elements
+  if (typeof voiceAudioElements !== 'undefined') {
+    for (const [peer, audio] of Object.entries(voiceAudioElements)) {
+      audio.pause();
+      audio.srcObject = null;
+    }
+  }
+  // Release all remote audio elements to free resources
+  for (const [peer, audio] of Object.entries(voiceAudioElements)) {
+    audio.srcObject = null;
+  }
+  voiceAudioElements = {};
   if (localVoiceStream) {
     localVoiceStream.getTracks().forEach(t => t.stop());
     localVoiceStream = null;
@@ -1930,15 +1968,33 @@ async function createVoicePeer(peerName, initiator) {
   };
 
   pc.ontrack = (e) => {
+    // Keep audio element in voiceAudioElements to prevent garbage collection
+    if (voiceAudioElements[peerName]) {
+      voiceAudioElements[peerName].srcObject = null;
+    }
     const audio = new Audio();
     audio.srcObject = e.streams[0];
-    audio.play();
+    audio.autoplay = true;
+    voiceAudioElements[peerName] = audio;
+    // play() can fail due to autoplay policy — catch and retry on user interaction
+    audio.play().catch(() => {
+      console.warn('Autoplay blocked for', peerName, '— will retry on click');
+      const resumeAudio = () => {
+        audio.play().catch(() => {});
+        document.removeEventListener('click', resumeAudio);
+      };
+      document.addEventListener('click', resumeAudio);
+    });
   };
 
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
       pc.close();
       delete voicePeers[peerName];
+      if (voiceAudioElements[peerName]) {
+        voiceAudioElements[peerName].srcObject = null;
+        delete voiceAudioElements[peerName];
+      }
     }
   };
 
@@ -1974,13 +2030,146 @@ function toggleMute() {
 
 function hangupCall() { leaveVoiceChannel(); }
 
+// --- Audio Device Settings ---
+let micAnalyser = null;
+let micLevelInterval = null;
+let selectedMicId = localStorage.getItem('flow-mic-id') || '';
+let selectedSpeakerId = localStorage.getItem('flow-speaker-id') || '';
+
+async function showAudioSettings() {
+  document.getElementById('audio-settings').style.display = 'flex';
+  await populateDevices();
+  startMicLevel();
+}
+
+async function populateDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const micSelect = document.getElementById('mic-select');
+    const speakerSelect = document.getElementById('speaker-select');
+    micSelect.innerHTML = '';
+    speakerSelect.innerHTML = '';
+
+    devices.filter(d => d.kind === 'audioinput').forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || ('Mikrofon ' + (i + 1));
+      if (d.deviceId === selectedMicId) opt.selected = true;
+      micSelect.appendChild(opt);
+    });
+
+    devices.filter(d => d.kind === 'audiooutput').forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || ('Hogtalare ' + (i + 1));
+      if (d.deviceId === selectedSpeakerId) opt.selected = true;
+      speakerSelect.appendChild(opt);
+    });
+
+    if (speakerSelect.children.length === 0) {
+      const opt = document.createElement('option');
+      opt.textContent = 'Standard (browsern valjer)';
+      speakerSelect.appendChild(opt);
+    }
+  } catch(e) {}
+}
+
+async function switchMicrophone() {
+  const deviceId = document.getElementById('mic-select').value;
+  selectedMicId = deviceId;
+  localStorage.setItem('flow-mic-id', deviceId);
+
+  if (!localVoiceStream) return;
+
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: { exact: deviceId } }
+    });
+    const newTrack = newStream.getAudioTracks()[0];
+    const oldTrack = localVoiceStream.getAudioTracks()[0];
+
+    // Replace track in all peer connections
+    for (const [peer, pc] of Object.entries(voicePeers)) {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+      if (sender) await sender.replaceTrack(newTrack);
+    }
+
+    oldTrack.stop();
+    localVoiceStream.removeTrack(oldTrack);
+    localVoiceStream.addTrack(newTrack);
+    newTrack.enabled = !isMuted;
+  } catch(e) {
+    console.error('Kunde inte byta mikrofon:', e);
+  }
+}
+
+async function switchSpeaker() {
+  const deviceId = document.getElementById('speaker-select').value;
+  selectedSpeakerId = deviceId;
+  localStorage.setItem('flow-speaker-id', deviceId);
+
+  // Set output device on all audio elements
+  if (typeof voiceAudioElements !== 'undefined') {
+    for (const [peer, audio] of Object.entries(voiceAudioElements)) {
+      if (audio.setSinkId) {
+        try { await audio.setSinkId(deviceId); } catch(e) {}
+      }
+    }
+  }
+}
+
+function startMicLevel() {
+  stopMicLevel();
+  if (!localVoiceStream) return;
+  try {
+    const ctx = new AudioContext();
+    const source = ctx.createMediaStreamSource(localVoiceStream);
+    micAnalyser = ctx.createAnalyser();
+    micAnalyser.fftSize = 256;
+    source.connect(micAnalyser);
+    const data = new Uint8Array(micAnalyser.frequencyBinCount);
+    micLevelInterval = setInterval(() => {
+      if (!micAnalyser) return;
+      micAnalyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b, 0) / data.length;
+      const pct = Math.min(100, avg * 2);
+      const el = document.getElementById('mic-level');
+      if (el) el.style.width = pct + '%';
+    }, 100);
+  } catch(e) {}
+}
+
+function stopMicLevel() {
+  clearInterval(micLevelInterval);
+  micLevelInterval = null;
+  micAnalyser = null;
+}
+
 // --- Handle voice signaling events ---
 function handleCallSignal(d) {
-  if (d.type === 'call_offer' && currentVoiceChannel) {
+  if (!d.from) return;  // No sender info — ignore
+  if (d.type === 'call_offer' && currentVoiceChannel && d.channel === currentVoiceChannel) {
     // Someone sent us an offer — create peer and answer
     (async () => {
       const peerName = d.from;
-      if (voicePeers[peerName]) return;
+      // If we already have a peer connection (e.g. we also sent an offer),
+      // use alphabetical tiebreak: lower name is the initiator.
+      if (voicePeers[peerName]) {
+        // We already initiated to this peer — glare condition.
+        // The user with the alphabetically lower name wins as initiator.
+        if (username < peerName) {
+          // We should be the initiator, ignore their offer (they'll accept ours)
+          return;
+        } else {
+          // They should be the initiator — tear down our connection and accept theirs
+          voicePeers[peerName].close();
+          delete voicePeers[peerName];
+          if (voiceAudioElements[peerName]) {
+            voiceAudioElements[peerName].srcObject = null;
+            delete voiceAudioElements[peerName];
+          }
+        }
+      }
       await createVoicePeer(peerName, false);
       const pc = voicePeers[peerName];
       if (!pc) return;
@@ -2005,10 +2194,14 @@ function handleVoiceEvent(d) {
     createVoicePeer(d.username, true);
   }
   if (d.event_type === 'voice_left' && d.username !== username) {
-    // Someone left — close their peer
+    // Someone left — close their peer and clean up audio
     if (voicePeers[d.username]) {
       voicePeers[d.username].close();
       delete voicePeers[d.username];
+    }
+    if (voiceAudioElements[d.username]) {
+      voiceAudioElements[d.username].srcObject = null;
+      delete voiceAudioElements[d.username];
     }
   }
   // Refresh sidebar to show updated voice members
