@@ -422,12 +422,6 @@ body {
   </div>
 </div>
 
-<div id="intro-overlay" style="display:none;position:fixed;inset:0;background:#000;z-index:600;align-items:center;justify-content:center;flex-direction:column">
-  <video id="intro-vid" autoplay playsinline style="max-width:400px;width:90%;max-height:85vh;border-radius:16px;box-shadow:0 0 60px rgba(79,143,247,0.3)">
-    <source src="/intro.mp4" type="video/mp4">
-  </video>
-  <button onclick="finishIntro()" style="margin-top:16px;background:none;border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:rgba(255,255,255,0.5);font-family:var(--font-mono);font-size:12px;padding:8px 20px;cursor:pointer">Skippa</button>
-</div>
 
 <div id="sidebar">
   <h2>Rum / Kanaler</h2>
@@ -590,6 +584,14 @@ body {
         <div id="mic-level" style="height:100%;width:0%;background:var(--green);transition:width 0.1s;border-radius:3px"></div>
       </div>
     </div>
+    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+      <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Brusreducering</label>
+      <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
+        <input type="checkbox" id="noise-toggle" onchange="toggleNoiseReduction()" checked style="opacity:0;width:0;height:0">
+        <span style="position:absolute;inset:0;background:var(--bg-elevated);border-radius:24px;transition:0.3s"></span>
+        <span id="noise-knob" style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:var(--green);border-radius:50%;transition:0.3s;transform:translateX(20px)"></span>
+      </label>
+    </div>
     <button onclick="document.getElementById('audio-settings').style.display='none'" style="width:100%;background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:13px;padding:10px;cursor:pointer">Stang</button>
   </div>
 </div>
@@ -719,7 +721,7 @@ async function doLogin() {
       localStorage.setItem('cortex-chat-user', username);
       localStorage.setItem('cortex-chat-token', userToken);
       document.getElementById('login-overlay').classList.add('hidden');
-      showIntroVideo();
+      startChat();
     } else {
       err.textContent = res.error || 'Kunde inte registrera';
       err.style.color = 'var(--red)';
@@ -988,11 +990,12 @@ async function switchChannel(name) {
 // === Messages ===
 async function loadMessages(channel) {
   const el = document.getElementById('messages');
-  el.innerHTML = '';
-  seenIds.clear();
-  lastDateShown = '';
   try {
     const data = await fetch('/api/channel/' + encodeURIComponent(channel) + '/messages?limit=200&user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
+    // Clear only after data is ready — prevents blink
+    el.innerHTML = '';
+    seenIds.clear();
+    lastDateShown = '';
     const msgs = (data.messages || []).reverse();
     if (msgs.length === 0) {
       el.innerHTML = '<div class="msg-system">Inga meddelanden. Skriv nagot!</div>';
@@ -1266,6 +1269,8 @@ function handleEvent(d) {
 
 // --- WebSocket ---
 function connectWebSocket() {
+  // Don't reconnect if already connected
+  if (_ws && _ws.readyState === WebSocket.OPEN) return;
   if (_ws) { try { _ws.close(); } catch(e) {} }
   if (eventSource) { try { eventSource.close(); eventSource = null; } catch(e) {} }
 
@@ -1313,6 +1318,8 @@ function connectWebSocket() {
 
 // --- SSE (fallback) ---
 function connectSSE() {
+  // Don't reconnect if already connected
+  if (eventSource && eventSource.readyState !== EventSource.CLOSED) return;
   if (_ws) { try { _ws.close(); _ws = null; } catch(e) {} }
   if (eventSource) { try { eventSource.close(); } catch(e) {} }
 
@@ -1581,28 +1588,6 @@ function fmtContent(s) {
 // Disable drag on page (except file drop zone)
 document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.preventDefault(); });
 
-// === Intro Video ===
-function showIntroVideo() {
-  const overlay = document.getElementById('intro-overlay');
-  overlay.style.display = 'flex';
-  const vid = document.getElementById('intro-vid');
-  vid.play().catch(() => {});
-  // When video ends -> enter chat
-  vid.addEventListener('ended', () => finishIntro(), { once: true });
-}
-
-function finishIntro() {
-  const overlay = document.getElementById('intro-overlay');
-  const vid = document.getElementById('intro-vid');
-  vid.pause();
-  overlay.style.transition = 'opacity 0.6s';
-  overlay.style.opacity = '0';
-  setTimeout(() => {
-    overlay.style.display = 'none';
-    overlay.style.opacity = '1';
-    startChat();
-  }, 600);
-}
 
 // === Ephemeral Mode ===
 function toggleEphemeral() {
@@ -1846,9 +1831,18 @@ let currentVoiceChannel = null;
 let voicePeers = {};  // {username: RTCPeerConnection}
 let voiceAudioElements = {};  // {username: HTMLAudioElement} — prevent GC
 let localVoiceStream = null;
+let processedStream = null;  // stream after audio processing pipeline
 let voiceTimer = null;
 let voiceSeconds = 0;
 let isMuted = false;
+let noiseReduction = localStorage.getItem('flow-noise-reduction') !== 'off';
+let audioCtx = null;
+let noiseGateNode = null;
+let highpassNode = null;
+let lowpassNode = null;
+let sourceNode = null;
+let destNode = null;
+let gateAnimFrame = null;
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -1871,14 +1865,129 @@ function sendSignal(data) {
   }
 }
 
+// --- Audio Processing Pipeline (Discord/Teams-style) ---
+function setupAudioPipeline(rawStream) {
+  try {
+    audioCtx = new AudioContext({ sampleRate: 48000 });
+    sourceNode = audioCtx.createMediaStreamSource(rawStream);
+    destNode = audioCtx.createMediaStreamDestination();
+
+    // Highpass filter — cut rumble below 80Hz (AC hum, wind)
+    highpassNode = audioCtx.createBiquadFilter();
+    highpassNode.type = 'highpass';
+    highpassNode.frequency.value = 80;
+    highpassNode.Q.value = 0.7;
+
+    // Lowpass filter — cut hiss above 8kHz
+    lowpassNode = audioCtx.createBiquadFilter();
+    lowpassNode.type = 'lowpass';
+    lowpassNode.frequency.value = 8000;
+    lowpassNode.Q.value = 0.7;
+
+    // Noise gate — silence below threshold
+    noiseGateNode = audioCtx.createGain();
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    const buf = new Float32Array(analyser.fftSize);
+
+    function processGate() {
+      if (!audioCtx || audioCtx.state === 'closed') return;
+      analyser.getFloatTimeDomainData(buf);
+      const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+      const threshold = 0.008;
+      const target = rms > threshold ? 1 : 0;
+      noiseGateNode.gain.setTargetAtTime(target, audioCtx.currentTime, 0.015);
+      gateAnimFrame = requestAnimationFrame(processGate);
+    }
+
+    if (noiseReduction) {
+      sourceNode.connect(highpassNode);
+      highpassNode.connect(lowpassNode);
+      lowpassNode.connect(analyser);
+      lowpassNode.connect(noiseGateNode);
+      noiseGateNode.connect(destNode);
+      processGate();
+    } else {
+      sourceNode.connect(destNode);
+    }
+
+    return destNode.stream;
+  } catch(e) {
+    console.warn('Audio pipeline failed, using raw stream:', e);
+    return rawStream;
+  }
+}
+
+function cleanupAudioPipeline() {
+  if (gateAnimFrame) { cancelAnimationFrame(gateAnimFrame); gateAnimFrame = null; }
+  if (audioCtx && audioCtx.state !== 'closed') {
+    try { audioCtx.close(); } catch(e) {}
+  }
+  audioCtx = null; sourceNode = null; destNode = null;
+  highpassNode = null; lowpassNode = null; noiseGateNode = null;
+}
+
+function toggleNoiseReduction() {
+  const on = document.getElementById('noise-toggle').checked;
+  noiseReduction = on;
+  localStorage.setItem('flow-noise-reduction', on ? 'on' : 'off');
+  // Update toggle knob position
+  document.getElementById('noise-knob').style.transform = on ? 'translateX(20px)' : 'translateX(0)';
+  document.getElementById('noise-knob').style.background = on ? 'var(--green)' : 'var(--text-muted)';
+
+  if (!audioCtx || !sourceNode || !destNode) return;
+  // Rewire pipeline live
+  try {
+    sourceNode.disconnect();
+    if (highpassNode) highpassNode.disconnect();
+    if (lowpassNode) lowpassNode.disconnect();
+    if (noiseGateNode) noiseGateNode.disconnect();
+    if (gateAnimFrame) { cancelAnimationFrame(gateAnimFrame); gateAnimFrame = null; }
+
+    if (on) {
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      const buf = new Float32Array(analyser.fftSize);
+      function processGate() {
+        if (!audioCtx || audioCtx.state === 'closed') return;
+        analyser.getFloatTimeDomainData(buf);
+        const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+        noiseGateNode.gain.setTargetAtTime(rms > 0.008 ? 1 : 0, audioCtx.currentTime, 0.015);
+        gateAnimFrame = requestAnimationFrame(processGate);
+      }
+      sourceNode.connect(highpassNode);
+      highpassNode.connect(lowpassNode);
+      lowpassNode.connect(analyser);
+      lowpassNode.connect(noiseGateNode);
+      noiseGateNode.connect(destNode);
+      processGate();
+    } else {
+      sourceNode.connect(destNode);
+    }
+  } catch(e) {
+    console.warn('Could not toggle noise reduction:', e);
+  }
+}
+
+// --- Opus SDP tuning (64kbps, FEC, DTX — like Discord) ---
+function tuneOpusSDP(sdp) {
+  return sdp.replace(
+    /a=fmtp:111 ([^\r\n]*)/g,
+    'a=fmtp:111 $1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;usedtx=1;useinbandfec=1;cbr=0'
+  );
+}
+
 // --- Voice Channel: Join ---
 async function joinVoiceChannel(channelName) {
   if (currentVoiceChannel === channelName) return;
   if (currentVoiceChannel) await leaveVoiceChannel();
 
   try {
-    const audioConstraints = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+    const audioConstraints = selectedMicId
+      ? { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1 }
+      : { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1 };
     localVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+    processedStream = setupAudioPipeline(localVoiceStream);
   } catch(e) {
     alert('Kunde inte komma at mikrofonen. Tillat mikrofon i browsern.');
     return;
@@ -1938,10 +2047,12 @@ function cleanupVoice() {
     audio.srcObject = null;
   }
   voiceAudioElements = {};
+  cleanupAudioPipeline();
   if (localVoiceStream) {
     localVoiceStream.getTracks().forEach(t => t.stop());
     localVoiceStream = null;
   }
+  processedStream = null;
   currentVoiceChannel = null;
   isMuted = false;
   clearInterval(voiceTimer);
@@ -1957,8 +2068,9 @@ async function createVoicePeer(peerName, initiator) {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   voicePeers[peerName] = pc;
 
-  if (localVoiceStream) {
-    localVoiceStream.getTracks().forEach(t => pc.addTrack(t, localVoiceStream));
+  const streamToSend = processedStream || localVoiceStream;
+  if (streamToSend) {
+    streamToSend.getTracks().forEach(t => pc.addTrack(t, streamToSend));
   }
 
   pc.onicecandidate = (e) => {
@@ -2000,8 +2112,9 @@ async function createVoicePeer(peerName, initiator) {
 
   if (initiator) {
     const offer = await pc.createOffer();
+    offer.sdp = tuneOpusSDP(offer.sdp);
     await pc.setLocalDescription(offer);
-    sendSignal({ type: 'call_offer', to: peerName, offer: offer, channel: currentVoiceChannel });
+    sendSignal({ type: 'call_offer', to: peerName, offer: pc.localDescription, channel: currentVoiceChannel });
   }
 }
 
@@ -2024,7 +2137,8 @@ function showVoiceOverlay(channelName) {
 function toggleMute() {
   if (!localVoiceStream) return;
   isMuted = !isMuted;
-  localVoiceStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+  const stream = processedStream || localVoiceStream;
+  stream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
   document.getElementById('mute-btn').textContent = isMuted ? '\ud83d\udd07' : '\ud83c\udf99';
 }
 
@@ -2038,6 +2152,11 @@ let selectedSpeakerId = localStorage.getItem('flow-speaker-id') || '';
 
 async function showAudioSettings() {
   document.getElementById('audio-settings').style.display = 'flex';
+  // Sync noise toggle state
+  const toggle = document.getElementById('noise-toggle');
+  toggle.checked = noiseReduction;
+  document.getElementById('noise-knob').style.transform = noiseReduction ? 'translateX(20px)' : 'translateX(0)';
+  document.getElementById('noise-knob').style.background = noiseReduction ? 'var(--green)' : 'var(--text-muted)';
   await populateDevices();
   startMicLevel();
 }
@@ -2083,21 +2202,24 @@ async function switchMicrophone() {
 
   try {
     const newStream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: deviceId } }
+      audio: { deviceId: { exact: deviceId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1 }
     });
-    const newTrack = newStream.getAudioTracks()[0];
     const oldTrack = localVoiceStream.getAudioTracks()[0];
+    oldTrack.stop();
+    localVoiceStream = newStream;
+
+    // Rebuild audio pipeline with new mic
+    cleanupAudioPipeline();
+    processedStream = setupAudioPipeline(localVoiceStream);
+    const newProcessedTrack = processedStream.getAudioTracks()[0];
 
     // Replace track in all peer connections
     for (const [peer, pc] of Object.entries(voicePeers)) {
       const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-      if (sender) await sender.replaceTrack(newTrack);
+      if (sender) await sender.replaceTrack(newProcessedTrack);
     }
 
-    oldTrack.stop();
-    localVoiceStream.removeTrack(oldTrack);
-    localVoiceStream.addTrack(newTrack);
-    newTrack.enabled = !isMuted;
+    newProcessedTrack.enabled = !isMuted;
   } catch(e) {
     console.error('Kunde inte byta mikrofon:', e);
   }
@@ -2175,8 +2297,9 @@ function handleCallSignal(d) {
       if (!pc) return;
       await pc.setRemoteDescription(d.offer);
       const answer = await pc.createAnswer();
+      answer.sdp = tuneOpusSDP(answer.sdp);
       await pc.setLocalDescription(answer);
-      sendSignal({ type: 'call_answer', to: peerName, answer: answer, channel: currentVoiceChannel });
+      sendSignal({ type: 'call_answer', to: peerName, answer: pc.localDescription, channel: currentVoiceChannel });
     })();
   }
   if (d.type === 'call_answer' && voicePeers[d.from]) {

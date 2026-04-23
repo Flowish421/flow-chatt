@@ -304,7 +304,7 @@ def get_db():
 # --- Rate limiting ---
 rate_limits = {}  # ip -> [timestamps]
 rate_lock = threading.Lock()
-MAX_REQUESTS_PER_MIN = 60
+MAX_REQUESTS_PER_MIN = 200
 MAX_SSE_CLIENTS = 100
 
 
@@ -663,8 +663,6 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_html("static/admin.html")
             return
 
-        if path == "/intro.mp4":
-            self.send_static_file("static/intro.mp4", "video/mp4")
             return
 
         # WebSocket upgrade
