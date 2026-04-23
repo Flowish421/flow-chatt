@@ -802,12 +802,13 @@ async function init() {
   // If we have saved credentials, verify them
   if (username && userToken) {
     try {
-      const res = await fetch('/api/verify', {
+      const resp = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, token: userToken }),
-      }).then(r => r.json());
-      if (res.ok) {
+      });
+      const res = await resp.json();
+      if (resp.ok && res.ok) {
         document.getElementById('login-overlay').classList.add('hidden');
         startChat();
         return;
@@ -818,6 +819,7 @@ async function init() {
     localStorage.removeItem('cortex-chat-token');
     username = '';
     userToken = '';
+    console.log('Token invalid, showing login');
   }
   // Show login screen
   document.getElementById('login-input').focus();
