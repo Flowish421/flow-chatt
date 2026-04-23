@@ -924,6 +924,11 @@ async function startChat() {
 
   await loadChannels();
   await checkInviteCode();
+  // Fall back to allmant if URL channel doesn't exist in loaded data
+  if (currentChannel !== 'allmant' && !channelData.find(c => c.name === currentChannel)) {
+    currentChannel = 'allmant';
+    currentGroup = null;
+  }
   switchChannel(currentChannel);
   setupDragDrop();
 
@@ -1737,7 +1742,8 @@ function connectWebSocket() {
     console.log('WS connected');
     _reconnectAttempt = 0;
     window._sseAlive = Date.now();
-    if (currentChannel && currentRoomAccess !== 'locked') {
+    // Only reload messages if channel exists in our data
+    if (currentChannel && currentRoomAccess !== 'locked' && channelData.find(c => c.name === currentChannel)) {
       loadMessages(currentChannel);
     }
   };
@@ -1775,7 +1781,7 @@ function connectSSE() {
 
   eventSource.onopen = () => {
     _reconnectAttempt = 0;
-    if (currentChannel && currentRoomAccess !== 'locked') {
+    if (currentChannel && currentRoomAccess !== 'locked' && channelData.find(c => c.name === currentChannel)) {
       loadMessages(currentChannel);
     }
   };
