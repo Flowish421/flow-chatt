@@ -59,6 +59,33 @@ membership_lock = threading.Lock()
 visibility_cache = {}  # room_name -> 'public'|'private'|'system'
 visibility_lock = threading.Lock()
 
+# --- Group membership cache ---
+group_membership_cache = {}  # group_id -> set(username)
+group_membership_lock = threading.Lock()
+group_visibility_cache = {}  # group_id -> 'public'|'private'
+group_visibility_lock = threading.Lock()
+
+
+def group_cache_add_member(group_id, username):
+    with group_membership_lock:
+        group_membership_cache.setdefault(group_id, set()).add(username)
+
+
+def group_cache_remove_member(group_id, username):
+    with group_membership_lock:
+        if group_id in group_membership_cache:
+            group_membership_cache[group_id].discard(username)
+
+
+def is_group_member(group_id, username):
+    with group_membership_lock:
+        return username in group_membership_cache.get(group_id, set())
+
+
+def cache_set_group_visibility(group_id, vis):
+    with group_visibility_lock:
+        group_visibility_cache[group_id] = vis
+
 
 def load_caches():
     """Load membership and visibility caches from DB."""
@@ -80,6 +107,22 @@ def load_caches():
         with visibility_lock:
             visibility_cache.clear()
             visibility_cache.update(vcache)
+        # Group membership
+        rows = db.execute("SELECT group_id, username FROM group_members").fetchall()
+        gcache = {}
+        for r in rows:
+            gcache.setdefault(r["group_id"], set()).add(r["username"])
+        with group_membership_lock:
+            group_membership_cache.clear()
+            group_membership_cache.update(gcache)
+        # Group visibility
+        rows = db.execute("SELECT id, visibility FROM groups").fetchall()
+        gvcache = {}
+        for r in rows:
+            gvcache[r["id"]] = r["visibility"] or "public"
+        with group_visibility_lock:
+            group_visibility_cache.clear()
+            group_visibility_cache.update(gvcache)
     finally:
         db.close()
 
@@ -105,6 +148,11 @@ def is_member(room, username):
         return username in membership_cache.get(room, set())
 
 
+def _group_role_level(role):
+    """Role hierarchy: owner > admin > member."""
+    return {"owner": 3, "admin": 2, "member": 1}.get(role, 0)
+
+
 def check_room_access(db, room_name, username=None):
     """Returns (room_row, access_level) or (None, None).
     access_level: 'system' | 'read' | 'write' | 'owner'
@@ -113,6 +161,40 @@ def check_room_access(db, room_name, username=None):
     if not room:
         return None, None
     vis = room["visibility"] or "public"
+
+    # Group channel access
+    group_id = room["group_id"] if "group_id" in room.keys() else None
+    if group_id:
+        if vis == "system":
+            return room, "system"
+        if not username:
+            # For group channels in public groups, allow read; private groups deny
+            with group_visibility_lock:
+                gvis = group_visibility_cache.get(group_id, "public")
+            if gvis == "private":
+                return None, None
+            return room, "read"
+        # Check group membership
+        gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, username)).fetchone()
+        if not gm:
+            # Not a group member
+            with group_visibility_lock:
+                gvis = group_visibility_cache.get(group_id, "public")
+            if gvis == "private":
+                return None, None
+            return room, "read"
+        # Group member — check required_role for the channel
+        user_role = gm["role"]
+        required_role = room["required_role"] if "required_role" in room.keys() else "member"
+        if not required_role:
+            required_role = "member"
+        if _group_role_level(user_role) >= _group_role_level(required_role):
+            if user_role == "owner":
+                return room, "owner"
+            return room, "write"
+        else:
+            return room, "read"
+
     if vis == "system":
         return room, "system"
     if vis == "public":
@@ -144,6 +226,9 @@ REQUEST_TIMEOUT = 30          # Socket timeout for slow clients (anti-Slowloris)
 MAX_SSE_PER_IP = 3            # Max SSE connections per IP
 MAX_QUEUE_SIZE = 50           # Max queued SSE events per client
 MAX_RATE_LIMIT_ENTRIES = 10000  # Cap rate_limits dict size to prevent memory leak
+MAX_GROUPS = 20               # Max groups (servers)
+MAX_CHANNELS_PER_GROUP = 20   # Max channels per group
+MAX_GROUP_MEMBERS = 200       # Max members per group
 user_msg_times = {}           # author -> [timestamps] for per-user spam limiting
 user_msg_lock = threading.Lock()
 
@@ -272,6 +357,54 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_react_msg ON reactions(message_id)")
+    # --- Groups (Discord-like servers) ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            description TEXT DEFAULT '',
+            visibility TEXT NOT NULL DEFAULT 'public',
+            owner TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at TEXT NOT NULL,
+            PRIMARY KEY (group_id, username)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS join_requests (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            resolved_by TEXT,
+            resolved_at TEXT,
+            UNIQUE(group_id, username)
+        )
+    """)
+    # Migration: add group columns to channels
+    for col, default in [("group_id", "NULL"), ("required_role", "'member'")]:
+        try:
+            conn.execute(f"ALTER TABLE channels ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
+    # Migration: add group_id to invites
+    try:
+        conn.execute("ALTER TABLE invites ADD COLUMN group_id TEXT DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+    # Group indexes
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_channels_group ON channels(group_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_join_requests_group ON join_requests(group_id)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -510,7 +643,7 @@ class WebSocketConnection:
 
 
 def broadcast(event_data, channel=None):
-    """Send event to ALL clients (SSE + WebSocket). Filter private rooms.
+    """Send event to ALL clients (SSE + WebSocket). Filter private rooms and private group channels.
     Collects targets under lock, sends outside lock to avoid holding locks during I/O."""
     filter_members = None
     if channel:
@@ -519,6 +652,21 @@ def broadcast(event_data, channel=None):
         if vis == "private":
             with membership_lock:
                 filter_members = membership_cache.get(channel, set()).copy()
+        # For group channels in private groups, filter by group membership
+        if filter_members is None:
+            # Check if channel belongs to a private group
+            db_bc = get_db()
+            try:
+                ch_row = db_bc.execute("SELECT group_id FROM channels WHERE name = ?", (channel,)).fetchone()
+                if ch_row and ch_row["group_id"]:
+                    gid = ch_row["group_id"]
+                    with group_visibility_lock:
+                        gvis = group_visibility_cache.get(gid, "public")
+                    if gvis == "private":
+                        with group_membership_lock:
+                            filter_members = group_membership_cache.get(gid, set()).copy()
+            finally:
+                db_bc.close()
 
     # SSE clients — collect targets under lock, enqueue is fast (no I/O)
     with sse_lock:
@@ -816,6 +964,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 ch = dict(r)
                 vis = ch.get("visibility", "public")
                 ch["channel_type"] = ch.get("channel_type", "text")
+                ch["group_id"] = ch.get("group_id", None)
+                ch["required_role"] = ch.get("required_role", "member")
                 ch["is_member"] = ch["name"] in user_rooms
                 ch["user_role"] = user_rooms.get(ch["name"], None)
                 if vis == "private" and not ch["is_member"]:
@@ -973,6 +1123,91 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 with sse_lock:
                     sse_clients[:] = [c for c in sse_clients if c[0] is not q]
+            return
+
+        # API: list groups — public + private groups user belongs to
+        if path == "/api/groups":
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            authenticated_user = None
+            if req_user and req_token:
+                db = get_db()
+                try:
+                    valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                finally:
+                    db.close()
+                if valid:
+                    authenticated_user = req_user
+
+            db = get_db()
+            try:
+                if authenticated_user:
+                    # Public groups + private groups user is member of
+                    rows = db.execute("""
+                        SELECT g.* FROM groups g
+                        WHERE g.visibility = 'public'
+                        OR g.id IN (SELECT group_id FROM group_members WHERE username = ?)
+                        ORDER BY g.created_at
+                    """, (authenticated_user,)).fetchall()
+                else:
+                    rows = db.execute("SELECT * FROM groups WHERE visibility = 'public' ORDER BY created_at").fetchall()
+
+                groups = []
+                for r in rows:
+                    g = dict(r)
+                    gid = g["id"]
+                    # Member count
+                    g["member_count"] = db.execute("SELECT COUNT(*) as c FROM group_members WHERE group_id = ?", (gid,)).fetchone()["c"]
+                    # User's role in this group
+                    if authenticated_user:
+                        gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (gid, authenticated_user)).fetchone()
+                        g["user_role"] = gm["role"] if gm else None
+                        g["is_member"] = gm is not None
+                    else:
+                        g["user_role"] = None
+                        g["is_member"] = False
+                    # Channels in this group (filtered by user's role)
+                    ch_rows = db.execute("SELECT * FROM channels WHERE group_id = ? ORDER BY created_at", (gid,)).fetchall()
+                    channels = []
+                    for ch in ch_rows:
+                        chd = dict(ch)
+                        chd["channel_type"] = chd.get("channel_type", "text")
+                        chd["required_role"] = chd.get("required_role", "member")
+                        req_role = chd["required_role"] or "member"
+                        user_role = g["user_role"]
+                        # If user has sufficient role, or channel is member-level, include it
+                        if user_role and _group_role_level(user_role) >= _group_role_level(req_role):
+                            chd["accessible"] = True
+                        elif g["visibility"] == "public":
+                            chd["accessible"] = False
+                        else:
+                            continue  # Private group, user doesn't have access to this channel
+                        channels.append(chd)
+                    g["channels"] = channels
+                    groups.append(g)
+
+                # System channels (no group, visibility='system')
+                system_rows = db.execute("SELECT * FROM channels WHERE visibility = 'system' AND (group_id IS NULL OR group_id = '') ORDER BY created_at").fetchall()
+                system_channels = [dict(r) for r in system_rows]
+
+                # Discover groups: public groups where user is NOT a member
+                discover_groups = []
+                if authenticated_user:
+                    disc_rows = db.execute("""
+                        SELECT g.id, g.name, g.display_name, g.visibility FROM groups g
+                        WHERE g.visibility = 'public'
+                        AND g.id NOT IN (SELECT group_id FROM group_members WHERE username = ?)
+                        ORDER BY g.created_at
+                    """, (authenticated_user,)).fetchall()
+                    for dr in disc_rows:
+                        dg = dict(dr)
+                        dg["member_count"] = db.execute("SELECT COUNT(*) as c FROM group_members WHERE group_id = ?", (dg["id"],)).fetchone()["c"]
+                        discover_groups.append(dg)
+
+                online_count = len(get_online())
+            finally:
+                db.close()
+            self.send_json({"ok": True, "groups": groups, "system_channels": system_channels, "discover_groups": discover_groups, "online_count": online_count})
             return
 
         self.send_error(404)
@@ -1807,11 +2042,18 @@ class ChatHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "inbjudningskoden har forbrukats"}, 410)
                     return
                 room_name = invite["room"]
+                invite_group_id = invite["group_id"] if "group_id" in invite.keys() else None
                 # Add member
                 db.execute(
                     "INSERT OR IGNORE INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'member', ?)",
                     (room_name, author, now())
                 )
+                # If invite has group_id, also add to group_members
+                if invite_group_id:
+                    db.execute(
+                        "INSERT OR IGNORE INTO group_members (group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        (invite_group_id, author, now())
+                    )
                 # Decrement uses
                 if invite["uses_left"] > 0:
                     new_uses = invite["uses_left"] - 1
@@ -1823,7 +2065,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             cache_add_member(room_name, author)
-            self.send_json({"ok": True, "room": room_name})
+            if invite_group_id:
+                group_cache_add_member(invite_group_id, author)
+            self.send_json({"ok": True, "room": room_name, "group_id": invite_group_id})
             return
 
         # API: kick member (owner only)
@@ -1889,6 +2133,651 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             self.send_json({"ok": True, "room": room_name, "members": members})
+            return
+
+        # ===== GROUP ENDPOINTS =====
+
+        # API: create group — POST /api/group
+        if path == "/api/group":
+            name = body.get("name", "").strip().lower().replace(" ", "-")[:50]
+            if not name:
+                self.send_json({"ok": False, "error": "name required"}, 400)
+                return
+            if not re.match(r'^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$', name):
+                self.send_json({"ok": False, "error": "invalid group name"}, 400)
+                return
+            display_name = body.get("display_name", name)[:100]
+            description = body.get("description", "")[:500]
+            visibility = body.get("visibility", "public")
+            if visibility not in ("public", "private"):
+                visibility = "public"
+            creator = body.get("created_by", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not creator or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (creator, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                # Check limit
+                group_count = db.execute("SELECT COUNT(*) as c FROM groups").fetchone()["c"]
+                if group_count >= MAX_GROUPS:
+                    self.send_json({"ok": False, "error": "max antal grupper uppnatt"}, 403)
+                    return
+                # Check unique name
+                if db.execute("SELECT 1 FROM groups WHERE name = ?", (name,)).fetchone():
+                    self.send_json({"ok": False, "error": "gruppnamnet finns redan"}, 409)
+                    return
+                group_id = uuid.uuid4().hex
+                ts = now()
+                db.execute(
+                    "INSERT INTO groups (id, name, display_name, description, visibility, owner, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (group_id, name, display_name, description, visibility, creator, ts)
+                )
+                # Add creator as owner
+                db.execute(
+                    "INSERT INTO group_members (group_id, username, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                    (group_id, creator, ts)
+                )
+                # Auto-create #general channel
+                general_name = f"g-{name}-general"[:50]
+                db.execute(
+                    "INSERT INTO channels (name, display_name, topic, visibility, owner, channel_type, created_by, created_at, group_id, required_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (general_name, "General", "", "public", creator, "text", creator, ts, group_id, "member")
+                )
+                db.commit()
+            finally:
+                db.close()
+            # Update caches
+            cache_set_group_visibility(group_id, visibility)
+            group_cache_add_member(group_id, creator)
+            cache_set_visibility(general_name, "public")
+            broadcast({"event_type": "group_created", "group_id": group_id, "name": name, "display_name": display_name, "visibility": visibility})
+            self.send_json({"ok": True, "group_id": group_id, "name": name, "general_channel": general_name})
+            return
+
+        # API: delete group — DELETE /api/group/{id}
+        if re.match(r'^/api/group/[a-f0-9]+$', path) and self.command == "DELETE":
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                if group["owner"] != author:
+                    self.send_json({"ok": False, "error": "bara agaren kan ta bort gruppen"}, 403)
+                    return
+                # Cascade delete: get all channels in this group
+                ch_names = [r["name"] for r in db.execute("SELECT name FROM channels WHERE group_id = ?", (group_id,)).fetchall()]
+                for ch_name in ch_names:
+                    db.execute("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel = ?)", (ch_name,))
+                    db.execute("DELETE FROM messages WHERE channel = ?", (ch_name,))
+                    db.execute("DELETE FROM voice_state WHERE channel = ?", (ch_name,))
+                db.execute("DELETE FROM channels WHERE group_id = ?", (group_id,))
+                db.execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
+                db.execute("DELETE FROM invites WHERE group_id = ?", (group_id,))
+                db.execute("DELETE FROM join_requests WHERE group_id = ?", (group_id,))
+                db.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+                db.commit()
+            finally:
+                db.close()
+            # Clear caches
+            with group_membership_lock:
+                group_membership_cache.pop(group_id, None)
+            with group_visibility_lock:
+                group_visibility_cache.pop(group_id, None)
+            for ch_name in ch_names:
+                with membership_lock:
+                    membership_cache.pop(ch_name, None)
+                with visibility_lock:
+                    visibility_cache.pop(ch_name, None)
+            broadcast({"event_type": "group_deleted", "group_id": group_id})
+            self.send_json({"ok": True})
+            return
+
+        # API: join public group — POST /api/group/{id}/join
+        if re.match(r'^/api/group/[a-f0-9]+/join$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                if group["visibility"] == "private":
+                    self.send_json({"ok": False, "error": "gruppen ar privat, begara tillgang istallet"}, 403)
+                    return
+                # Check member limit
+                member_count = db.execute("SELECT COUNT(*) as c FROM group_members WHERE group_id = ?", (group_id,)).fetchone()["c"]
+                if member_count >= MAX_GROUP_MEMBERS:
+                    self.send_json({"ok": False, "error": "gruppen ar full"}, 403)
+                    return
+                db.execute(
+                    "INSERT OR IGNORE INTO group_members (group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                    (group_id, author, now())
+                )
+                db.commit()
+            finally:
+                db.close()
+            group_cache_add_member(group_id, author)
+            broadcast({"event_type": "group_member_joined", "group_id": group_id, "username": author})
+            self.send_json({"ok": True, "group_id": group_id})
+            return
+
+        # API: leave group — POST /api/group/{id}/leave
+        if re.match(r'^/api/group/[a-f0-9]+/leave$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                member = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not member:
+                    self.send_json({"ok": True})
+                    return
+                db.execute("DELETE FROM group_members WHERE group_id = ? AND username = ?", (group_id, author))
+                if member["role"] == "owner":
+                    # Transfer ownership: oldest admin, then oldest member
+                    next_owner = db.execute("SELECT username FROM group_members WHERE group_id = ? AND role = 'admin' ORDER BY joined_at ASC LIMIT 1", (group_id,)).fetchone()
+                    if not next_owner:
+                        next_owner = db.execute("SELECT username FROM group_members WHERE group_id = ? ORDER BY joined_at ASC LIMIT 1", (group_id,)).fetchone()
+                    if next_owner:
+                        db.execute("UPDATE group_members SET role = 'owner' WHERE group_id = ? AND username = ?", (group_id, next_owner["username"]))
+                        db.execute("UPDATE groups SET owner = ? WHERE id = ?", (next_owner["username"], group_id))
+                    else:
+                        # No members left — delete group and all data
+                        ch_names = [r["name"] for r in db.execute("SELECT name FROM channels WHERE group_id = ?", (group_id,)).fetchall()]
+                        for ch_name in ch_names:
+                            db.execute("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel = ?)", (ch_name,))
+                            db.execute("DELETE FROM messages WHERE channel = ?", (ch_name,))
+                            db.execute("DELETE FROM voice_state WHERE channel = ?", (ch_name,))
+                        db.execute("DELETE FROM channels WHERE group_id = ?", (group_id,))
+                        db.execute("DELETE FROM invites WHERE group_id = ?", (group_id,))
+                        db.execute("DELETE FROM join_requests WHERE group_id = ?", (group_id,))
+                        db.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+                        with group_visibility_lock:
+                            group_visibility_cache.pop(group_id, None)
+                        for ch_name in ch_names:
+                            with visibility_lock:
+                                visibility_cache.pop(ch_name, None)
+                            with membership_lock:
+                                membership_cache.pop(ch_name, None)
+                db.commit()
+            finally:
+                db.close()
+            group_cache_remove_member(group_id, author)
+            self.send_json({"ok": True})
+            return
+
+        # API: create channel in group — POST /api/group/{id}/channel
+        if re.match(r'^/api/group/[a-f0-9]+/channel$', path):
+            group_id = path.split("/")[3]
+            name = body.get("name", "").strip().lower().replace(" ", "-")[:50]
+            if not name:
+                self.send_json({"ok": False, "error": "name required"}, 400)
+                return
+            if not re.match(r'^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$', name):
+                self.send_json({"ok": False, "error": "invalid channel name"}, 400)
+                return
+            display_name = body.get("display_name", name)[:100]
+            channel_type = body.get("channel_type", "text")
+            if channel_type not in ("text", "voice"):
+                channel_type = "text"
+            required_role = body.get("required_role", "member")
+            if required_role not in ("member", "admin", "owner"):
+                required_role = "member"
+            creator = body.get("created_by", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not creator or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (creator, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Auth: admin or owner only
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, creator)).fetchone()
+                if not gm or gm["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare kan skapa kanaler"}, 403)
+                    return
+                # Check channel limit
+                ch_count = db.execute("SELECT COUNT(*) as c FROM channels WHERE group_id = ?", (group_id,)).fetchone()["c"]
+                if ch_count >= MAX_CHANNELS_PER_GROUP:
+                    self.send_json({"ok": False, "error": "max antal kanaler i gruppen uppnatt"}, 403)
+                    return
+                # Prefix channel name with group name for uniqueness
+                full_name = f"g-{group['name']}-{name}"[:50]
+                if db.execute("SELECT 1 FROM channels WHERE name = ?", (full_name,)).fetchone():
+                    self.send_json({"ok": False, "error": "kanalen finns redan"}, 409)
+                    return
+                ts = now()
+                db.execute(
+                    "INSERT INTO channels (name, display_name, topic, visibility, owner, channel_type, created_by, created_at, group_id, required_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (full_name, display_name, "", "public", creator, channel_type, creator, ts, group_id, required_role)
+                )
+                db.commit()
+            finally:
+                db.close()
+            cache_set_visibility(full_name, "public")
+            broadcast({"event_type": "group_channel_created", "group_id": group_id, "channel": full_name, "display_name": display_name})
+            self.send_json({"ok": True, "channel": full_name, "group_id": group_id})
+            return
+
+        # API: delete channel in group — DELETE /api/group/{id}/channel/{channel_name}
+        if re.match(r'^/api/group/[a-f0-9]+/channel/.+$', path) and self.command == "DELETE":
+            parts = path.split("/")
+            group_id = parts[3]
+            channel_name = unquote(parts[5])
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                ch = db.execute("SELECT * FROM channels WHERE name = ? AND group_id = ?", (channel_name, group_id)).fetchone()
+                if not ch:
+                    self.send_json({"ok": False, "error": "kanalen finns inte"}, 404)
+                    return
+                # Auth: admin/owner or channel creator
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                is_admin_or_owner = gm and gm["role"] in ("admin", "owner")
+                is_creator = ch["created_by"] == author
+                if not is_admin_or_owner and not is_creator:
+                    self.send_json({"ok": False, "error": "unauthorized"}, 403)
+                    return
+                # Delete channel and its data
+                db.execute("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel = ?)", (channel_name,))
+                db.execute("DELETE FROM messages WHERE channel = ?", (channel_name,))
+                db.execute("DELETE FROM voice_state WHERE channel = ?", (channel_name,))
+                db.execute("DELETE FROM channels WHERE name = ?", (channel_name,))
+                db.commit()
+            finally:
+                db.close()
+            with visibility_lock:
+                visibility_cache.pop(channel_name, None)
+            with membership_lock:
+                membership_cache.pop(channel_name, None)
+            broadcast({"event_type": "channel_deleted", "channel": channel_name, "group_id": group_id})
+            self.send_json({"ok": True})
+            return
+
+        # API: change member role — POST /api/group/{id}/members/{username}/role
+        if re.match(r'^/api/group/[a-f0-9]+/members/.+/role$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            target_user = unquote(parts[5])
+            new_role = body.get("role", "").strip()
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            if new_role not in ("member", "admin", "owner"):
+                self.send_json({"ok": False, "error": "ogiltig roll"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Only owner can promote/demote
+                if group["owner"] != author:
+                    self.send_json({"ok": False, "error": "bara agaren kan andra roller"}, 403)
+                    return
+                target_member = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, target_user)).fetchone()
+                if not target_member:
+                    self.send_json({"ok": False, "error": "anvandaren ar inte medlem"}, 404)
+                    return
+                if new_role == "owner":
+                    # Transfer ownership
+                    db.execute("UPDATE group_members SET role = 'admin' WHERE group_id = ? AND username = ?", (group_id, author))
+                    db.execute("UPDATE groups SET owner = ? WHERE id = ?", (target_user, group_id))
+                db.execute("UPDATE group_members SET role = ? WHERE group_id = ? AND username = ?", (new_role, group_id, target_user))
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "group_role_changed", "group_id": group_id, "username": target_user, "role": new_role})
+            self.send_json({"ok": True, "username": target_user, "role": new_role})
+            return
+
+        # API: kick from group — POST /api/group/{id}/kick
+        if re.match(r'^/api/group/[a-f0-9]+/kick$', path):
+            group_id = path.split("/")[3]
+            target = body.get("username", "").strip()[:20]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            if not target or target == author:
+                self.send_json({"ok": False, "error": "ogiltig anvandare"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                author_member = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not author_member or author_member["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare kan kicka"}, 403)
+                    return
+                target_member = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, target)).fetchone()
+                if not target_member:
+                    self.send_json({"ok": False, "error": "anvandaren ar inte medlem"}, 404)
+                    return
+                # Admins can't kick other admins or owner
+                if author_member["role"] == "admin" and target_member["role"] in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "admins kan inte kicka andra admins eller agaren"}, 403)
+                    return
+                db.execute("DELETE FROM group_members WHERE group_id = ? AND username = ?", (group_id, target))
+                db.commit()
+            finally:
+                db.close()
+            group_cache_remove_member(group_id, target)
+            send_to_user(target, {"event_type": "group_kicked", "group_id": group_id, "username": target})
+            self.send_json({"ok": True, "kicked": target})
+            return
+
+        # API: invite to group — POST /api/group/{id}/invite
+        if re.match(r'^/api/group/[a-f0-9]+/invite$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Check author is member (any role can invite)
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm:
+                    self.send_json({"ok": False, "error": "du ar inte medlem i gruppen"}, 403)
+                    return
+
+                invitee = body.get("username", "").strip()
+                generate_code = body.get("generate_code", False)
+
+                if invitee:
+                    # Direct invite: add to members
+                    user_exists = db.execute("SELECT username FROM users WHERE username = ?", (invitee,)).fetchone()
+                    if not user_exists:
+                        self.send_json({"ok": False, "error": "anvandaren finns inte"}, 404)
+                        return
+                    member_count = db.execute("SELECT COUNT(*) as c FROM group_members WHERE group_id = ?", (group_id,)).fetchone()["c"]
+                    if member_count >= MAX_GROUP_MEMBERS:
+                        self.send_json({"ok": False, "error": "gruppen ar full"}, 403)
+                        return
+                    db.execute(
+                        "INSERT OR IGNORE INTO group_members (group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        (group_id, invitee, now())
+                    )
+                    db.commit()
+                    group_cache_add_member(group_id, invitee)
+                    send_to_user(invitee, {"event_type": "group_invited", "group_id": group_id, "group_name": group["name"], "display_name": group["display_name"] or group["name"], "username": invitee})
+                    self.send_json({"ok": True, "invited": invitee})
+                    return
+
+                if generate_code:
+                    invite_count = db.execute("SELECT COUNT(*) as c FROM invites WHERE group_id = ?", (group_id,)).fetchone()["c"]
+                    if invite_count >= 10:
+                        self.send_json({"ok": False, "error": "max 10 inbjudningskoder per grupp"}, 400)
+                        return
+                    code = uuid.uuid4().hex[:16]
+                    try:
+                        uses = max(1, min(100, int(body.get("uses", 10))))
+                    except (ValueError, TypeError):
+                        uses = 10
+                    # Use the group's general channel as room placeholder, set group_id
+                    general_ch = db.execute("SELECT name FROM channels WHERE group_id = ? ORDER BY created_at LIMIT 1", (group_id,)).fetchone()
+                    room_name = general_ch["name"] if general_ch else group["name"]
+                    db.execute(
+                        "INSERT INTO invites (code, room, created_by, created_at, uses_left, group_id) VALUES (?, ?, ?, ?, ?, ?)",
+                        (code, room_name, author, now(), uses, group_id)
+                    )
+                    db.commit()
+                    self.send_json({"ok": True, "code": code, "uses": uses})
+                    return
+
+                self.send_json({"ok": False, "error": "ange username eller generate_code"}, 400)
+            finally:
+                db.close()
+            return
+
+        # API: request to join private group — POST /api/group/{id}/request-join
+        if re.match(r'^/api/group/[a-f0-9]+/request-join$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Check if already a member
+                existing_member = db.execute("SELECT 1 FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if existing_member:
+                    self.send_json({"ok": False, "error": "du ar redan medlem"}, 400)
+                    return
+                # Check for existing pending request
+                existing_req = db.execute("SELECT 1 FROM join_requests WHERE group_id = ? AND username = ? AND status = 'pending'", (group_id, author)).fetchone()
+                if existing_req:
+                    self.send_json({"ok": False, "error": "du har redan en aktiv forfragan"}, 400)
+                    return
+                req_id = uuid.uuid4().hex
+                db.execute(
+                    "INSERT OR REPLACE INTO join_requests (id, group_id, username, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+                    (req_id, group_id, author, now())
+                )
+                db.commit()
+            finally:
+                db.close()
+            # Notify group owner
+            send_to_user(group["owner"], {
+                "event_type": "group_join_request",
+                "group_id": group_id,
+                "group_name": group["name"],
+                "request_id": req_id,
+                "from": author,
+            })
+            self.send_json({"ok": True, "request_id": req_id})
+            return
+
+        # API: resolve join request — POST /api/group/{id}/request/{req_id}/resolve
+        if re.match(r'^/api/group/[a-f0-9]+/request/[a-f0-9]+/resolve$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            req_id = parts[5]
+            action = body.get("action", "").strip()
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            if action not in ("accept", "reject"):
+                self.send_json({"ok": False, "error": "action must be accept or reject"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Only owner or admin can resolve
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm or gm["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare kan hantera forfragningar"}, 403)
+                    return
+                req = db.execute("SELECT * FROM join_requests WHERE id = ? AND group_id = ?", (req_id, group_id)).fetchone()
+                if not req:
+                    self.send_json({"ok": False, "error": "forfragningen finns inte"}, 404)
+                    return
+                if req["status"] != "pending":
+                    self.send_json({"ok": False, "error": "forfragningen ar redan hanterad"}, 400)
+                    return
+                ts = now()
+                db.execute("UPDATE join_requests SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ?",
+                           (action + "ed", author, ts, req_id))
+                if action == "accept":
+                    member_count = db.execute("SELECT COUNT(*) as c FROM group_members WHERE group_id = ?", (group_id,)).fetchone()["c"]
+                    if member_count >= MAX_GROUP_MEMBERS:
+                        self.send_json({"ok": False, "error": "gruppen ar full"}, 403)
+                        return
+                    db.execute(
+                        "INSERT OR IGNORE INTO group_members (group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        (group_id, req["username"], ts)
+                    )
+                    group_cache_add_member(group_id, req["username"])
+                db.commit()
+            finally:
+                db.close()
+            # Notify the requester
+            send_to_user(req["username"], {
+                "event_type": "group_join_resolved",
+                "group_id": group_id,
+                "group_name": group["name"],
+                "action": action,
+            })
+            self.send_json({"ok": True, "action": action, "username": req["username"]})
+            return
+
+        # API: list group members — POST /api/group/{id}/members
+        if re.match(r'^/api/group/[a-f0-9]+/members$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Check user is a member
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm:
+                    self.send_json({"ok": False, "error": "du ar inte medlem"}, 403)
+                    return
+                rows = db.execute("SELECT username, role, joined_at FROM group_members WHERE group_id = ? ORDER BY joined_at", (group_id,)).fetchall()
+                members = [dict(r) for r in rows]
+            finally:
+                db.close()
+            self.send_json({"ok": True, "members": members})
+            return
+
+        # API: list pending join requests — POST /api/group/{id}/requests
+        if re.match(r'^/api/group/[a-f0-9]+/requests$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                # Only owner or admin can view requests
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm or gm["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare kan se forfragningar"}, 403)
+                    return
+                rows = db.execute("SELECT id, username, status, created_at FROM join_requests WHERE group_id = ? AND status = 'pending' ORDER BY created_at", (group_id,)).fetchall()
+                requests = [dict(r) for r in rows]
+            finally:
+                db.close()
+            self.send_json({"ok": True, "requests": requests})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)
