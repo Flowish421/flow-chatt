@@ -894,7 +894,7 @@ async function switchChannel(name) {
   });
   history.replaceState(null, '', '?channel=' + encodeURIComponent(name));
   await loadMessages(name);
-  connectSSE();
+  connectRealtime();
   if (canWrite) document.getElementById('msg-input').focus();
 }
 
@@ -1114,17 +1114,117 @@ function openLightbox(src) {
   document.getElementById('lightbox').classList.add('on');
 }
 
-// === SSE ===
-let _sseReconnectAttempt = 0;
+// === Real-time: WebSocket (primary) + SSE (fallback) ===
+let _reconnectAttempt = 0;
+let _ws = null;
+let _useWebSocket = true; // Try WebSocket first
 
+function connectRealtime() {
+  if (_useWebSocket) {
+    connectWebSocket();
+  } else {
+    connectSSE();
+  }
+}
+
+function handleEvent(d) {
+  // Access request — show to room owner
+  if (d.event_type === 'access_request' && d.owner === username) {
+    if (confirm(d.from + ' vill ga med i "' + (d.display_name || d.room) + '".\n\nGodkann?')) {
+      fetch('/api/channel/' + encodeURIComponent(d.room) + '/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author: username, token: userToken, username: d.from }),
+      });
+    }
+    return;
+  }
+  if (d.event_type === 'invited' || d.event_type === 'kicked') {
+    handleRoomEvent(d);
+    return;
+  }
+  if (d.event_type === 'message_deleted' && d.id) {
+    const el = msgElements.get(d.id);
+    if (el) { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }
+    return;
+  }
+  if (d.event_type === 'reaction' && d.message_id) {
+    const container = document.getElementById('reacts-' + d.message_id);
+    if (container) renderReactions(container, d.reactions || [], d.message_id);
+    return;
+  }
+  if (d.event_type === 'ping') return;
+  if (d.event_type !== 'chat_message') return;
+  if (d.channel !== currentChannel) return;
+  if (d.id && seenIds.has(d.id)) return;
+  if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
+  if (d.id) seenIds.add(d.id);
+  addDateSeparator(d.created_at);
+  appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0);
+  scrollBottom();
+  if (document.hidden && Notification.permission === 'granted') {
+    new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
+  }
+}
+
+// --- WebSocket ---
+function connectWebSocket() {
+  if (_ws) { try { _ws.close(); } catch(e) {} }
+  if (eventSource) { try { eventSource.close(); eventSource = null; } catch(e) {} }
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = proto + '//' + location.host + '/ws?user=' + encodeURIComponent(username);
+  console.log('WS connecting:', url);
+
+  try {
+    _ws = new WebSocket(url);
+  } catch(e) {
+    console.log('WebSocket not available, falling back to SSE');
+    _useWebSocket = false;
+    connectSSE();
+    return;
+  }
+
+  _ws.onopen = () => {
+    console.log('WS connected');
+    _reconnectAttempt = 0;
+    window._sseAlive = Date.now();
+    if (currentChannel && currentRoomAccess !== 'locked') {
+      loadMessages(currentChannel);
+    }
+  };
+
+  _ws.onmessage = (e) => {
+    window._sseAlive = Date.now();
+    try {
+      const d = JSON.parse(e.data);
+      handleEvent(d);
+    } catch(err) {}
+  };
+
+  _ws.onclose = () => {
+    console.log('WS closed');
+    _reconnectAttempt++;
+    const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 30000);
+    setTimeout(connectRealtime, delay);
+  };
+
+  _ws.onerror = () => {
+    // Will trigger onclose after this
+  };
+}
+
+// --- SSE (fallback) ---
 function connectSSE() {
+  if (_ws) { try { _ws.close(); _ws = null; } catch(e) {} }
   if (eventSource) { try { eventSource.close(); } catch(e) {} }
+
+  console.log('SSE connecting...');
   eventSource = new EventSource('/api/events?user=' + encodeURIComponent(username));
   window._sseAlive = Date.now();
 
   eventSource.onopen = () => {
-    _sseReconnectAttempt = 0;
-    // Reload messages to catch anything missed during disconnect
+    _reconnectAttempt = 0;
     if (currentChannel && currentRoomAccess !== 'locked') {
       loadMessages(currentChannel);
     }
@@ -1133,61 +1233,21 @@ function connectSSE() {
   eventSource.onmessage = (e) => {
     window._sseAlive = Date.now();
     try {
-      const d = JSON.parse(e.data);
-      // Reaction update
-      // Access request — show to room owner
-      if (d.event_type === 'access_request' && d.owner === username) {
-        if (confirm(d.from + ' vill ga med i "' + (d.display_name || d.room) + '".\n\nGodkann?')) {
-          fetch('/api/channel/' + encodeURIComponent(d.room) + '/invite', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ author: username, token: userToken, username: d.from }),
-          });
-        }
-        return;
-      }
-      // Room events (invite/kick)
-      if (d.event_type === 'invited' || d.event_type === 'kicked') {
-        handleRoomEvent(d);
-        return;
-      }
-      // Message deleted
-      if (d.event_type === 'message_deleted' && d.id) {
-        const el = msgElements.get(d.id);
-        if (el) { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }
-        return;
-      }
-      if (d.event_type === 'reaction' && d.message_id) {
-        const container = document.getElementById('reacts-' + d.message_id);
-        if (container) renderReactions(container, d.reactions || [], d.message_id);
-        return;
-      }
-      if (d.event_type !== 'chat_message') return;
-      if (d.channel !== currentChannel) return;
-      if (d.id && seenIds.has(d.id)) return;
-      if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
-      if (d.id) seenIds.add(d.id);
-      addDateSeparator(d.created_at);
-      appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0);
-      scrollBottom();
-      if (document.hidden && Notification.permission === 'granted') {
-        new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
-      }
+      handleEvent(JSON.parse(e.data));
     } catch(err) {}
   };
+
   eventSource.onerror = () => {
-    _sseReconnectAttempt++;
-    const delay = Math.min(1000 * Math.pow(2, _sseReconnectAttempt), 30000);
-    console.log('SSE error, reconnecting in ' + (delay/1000) + 's...');
+    _reconnectAttempt++;
+    const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 30000);
     setTimeout(connectSSE, delay);
   };
-  // Keepalive check — reconnect if no data in 30s (server pings every 15s)
+
   clearInterval(window._sseCheck);
   window._sseCheck = setInterval(() => {
     if (Date.now() - (window._sseAlive || 0) > 30000) {
-      console.log('SSE stale, reconnecting...');
-      _sseReconnectAttempt++;
-      connectSSE();
+      _reconnectAttempt++;
+      connectRealtime();
     }
   }, 10000);
 }

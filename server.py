@@ -4,7 +4,6 @@ Python 3.10+, zero external dependencies (stdlib only).
 Deploy anywhere: Render, Railway, Fly.io, or localhost.
 """
 
-import asyncio
 import json
 import os
 import sqlite3
@@ -14,8 +13,11 @@ import threading
 import re
 import hashlib
 import hmac
+import struct
+import base64
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
 from datetime import datetime, timezone
 from queue import Queue, Empty
@@ -377,6 +379,157 @@ def broadcast(event_data, channel=None):
             sse_clients.pop(i)
 
 
+# --- WebSocket Clients ---
+ws_clients = []  # list of WebSocketConnection
+ws_lock = threading.Lock()
+
+WS_MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+class WebSocketConnection:
+    """A single WebSocket client connection."""
+
+    def __init__(self, handler, username="anonymous", ip=""):
+        self.handler = handler
+        self.username = username
+        self.ip = ip
+        self.connected_at = time.time()
+        self.alive = True
+        self.write_lock = threading.Lock()
+
+    def read_frame(self):
+        """Read one WebSocket frame. Returns (opcode, payload) or (None, None)."""
+        try:
+            header = self.handler.rfile.read(2)
+            if len(header) < 2:
+                return None, None
+            b0, b1 = header[0], header[1]
+            opcode = b0 & 0x0F
+            masked = (b1 & 0x80) != 0
+            payload_len = b1 & 0x7F
+
+            if payload_len == 126:
+                ext = self.handler.rfile.read(2)
+                if len(ext) < 2: return None, None
+                payload_len = struct.unpack("!H", ext)[0]
+            elif payload_len == 127:
+                ext = self.handler.rfile.read(8)
+                if len(ext) < 8: return None, None
+                payload_len = struct.unpack("!Q", ext)[0]
+
+            if payload_len > 1024 * 1024:  # 1MB max frame
+                return None, None
+
+            if masked:
+                mask_key = self.handler.rfile.read(4)
+                if len(mask_key) < 4: return None, None
+                raw = self.handler.rfile.read(payload_len)
+                if len(raw) < payload_len: return None, None
+                payload = bytes(raw[i] ^ mask_key[i % 4] for i in range(len(raw)))
+            else:
+                payload = self.handler.rfile.read(payload_len)
+                if len(payload) < payload_len: return None, None
+
+            return opcode, payload
+        except (socket.timeout, OSError, ValueError):
+            return None, None
+
+    def send_frame(self, opcode, payload):
+        """Send a WebSocket frame (unmasked, from server)."""
+        try:
+            with self.write_lock:
+                frame = bytearray()
+                frame.append(0x80 | opcode)  # FIN + opcode
+                plen = len(payload)
+                if plen < 126:
+                    frame.append(plen)
+                elif plen < 65536:
+                    frame.append(126)
+                    frame.extend(struct.pack("!H", plen))
+                else:
+                    frame.append(127)
+                    frame.extend(struct.pack("!Q", plen))
+                frame.extend(payload)
+                self.handler.wfile.write(bytes(frame))
+                self.handler.wfile.flush()
+                return True
+        except (socket.timeout, OSError, BrokenPipeError):
+            self.alive = False
+            return False
+
+    def send_json(self, data):
+        """Send a JSON text frame."""
+        return self.send_frame(0x1, json.dumps(data).encode("utf-8"))
+
+    def send_close(self, code=1000):
+        """Send close frame."""
+        self.send_frame(0x8, struct.pack("!H", code))
+        self.alive = False
+
+    def run(self):
+        """Main WebSocket event loop."""
+        while self.alive:
+            opcode, payload = self.read_frame()
+            if opcode is None:
+                break
+            if opcode == 0x8:  # Close
+                self.send_close(1000)
+                break
+            if opcode == 0x9:  # Ping → Pong
+                self.send_frame(0xA, payload)
+                continue
+            if opcode == 0xA:  # Pong
+                continue
+            if opcode == 0x1:  # Text
+                try:
+                    msg = json.loads(payload.decode("utf-8"))
+                    # Client can send ping-type messages to keep alive
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+        self.alive = False
+
+
+def broadcast(event_data, channel=None):
+    """Send event to ALL clients (SSE + WebSocket). Filter private rooms."""
+    filter_members = None
+    if channel:
+        with visibility_lock:
+            vis = visibility_cache.get(channel, "public")
+        if vis == "private":
+            with membership_lock:
+                filter_members = membership_cache.get(channel, set())
+
+    # SSE clients
+    with sse_lock:
+        dead = []
+        for i, entry in enumerate(sse_clients):
+            if filter_members is not None:
+                sse_user = entry[2] if len(entry) > 2 else ""
+                if sse_user not in filter_members:
+                    continue
+            try:
+                if entry[0].qsize() < MAX_QUEUE_SIZE:
+                    entry[0].put_nowait(event_data)
+            except:
+                dead.append(i)
+        for i in reversed(dead):
+            sse_clients.pop(i)
+
+    # WebSocket clients
+    with ws_lock:
+        dead = []
+        for i, ws in enumerate(ws_clients):
+            if not ws.alive:
+                dead.append(i)
+                continue
+            if filter_members is not None and ws.username not in filter_members:
+                continue
+            if not ws.send_json(event_data):
+                dead.append(i)
+        for i in reversed(dead):
+            ws_clients.pop(i)
+
+
 # --- HTTP Handler ---
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -483,6 +636,59 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_static_file("static/intro.mp4", "video/mp4")
             return
 
+        # WebSocket upgrade
+        if path == "/ws":
+            upgrade = self.headers.get("Upgrade", "").lower()
+            if upgrade != "websocket":
+                self.send_error(400)
+                return
+            sec_key = self.headers.get("Sec-WebSocket-Key", "")
+            if not sec_key:
+                self.send_error(400)
+                return
+
+            # Compute accept key
+            accept = base64.b64encode(
+                hashlib.sha1((sec_key + WS_MAGIC_GUID).encode()).digest()
+            ).decode()
+
+            # Send 101 Switching Protocols
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.wfile.flush()
+
+            # Parse username from query
+            ws_user = params.get("user", ["anonymous"])[0][:20]
+            client_ip = self.real_ip()
+            touch_online(ws_user, client_ip, "ws")
+
+            ws_conn = WebSocketConnection(self, ws_user, client_ip)
+            with ws_lock:
+                if len(ws_clients) >= MAX_SSE_CLIENTS:
+                    ws_conn.send_close(1013)  # Try again later
+                    return
+                ws_clients.append(ws_conn)
+
+            try:
+                # Send ping every 20s to keep connection alive
+                def ws_ping_loop():
+                    while ws_conn.alive:
+                        time.sleep(20)
+                        if ws_conn.alive:
+                            ws_conn.send_frame(0x9, b"")
+                ping_thread = threading.Thread(target=ws_ping_loop, daemon=True)
+                ping_thread.start()
+
+                ws_conn.run()
+            finally:
+                ws_conn.alive = False
+                with ws_lock:
+                    ws_clients[:] = [c for c in ws_clients if c is not ws_conn]
+            return
+
         # API: health
         if path == "/api/health":
             self.send_json({"ok": True})
@@ -526,6 +732,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             # Count unique online SSE users
             with sse_lock:
                 online_names = set(c[2] for c in sse_clients if len(c) > 2 and c[2] != "anonymous")
+            with ws_lock:
+                online_names |= set(c.username for c in ws_clients if c.alive and c.username != "anonymous")
             self.send_json({"ok": True, "channels": channels, "online_count": len(online_names)})
             return
 
