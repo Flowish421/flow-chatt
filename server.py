@@ -218,12 +218,22 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
-    # Migration: add visibility/owner columns if missing
-    for col, default in [("visibility", "'public'"), ("owner", "NULL")]:
+    # Migration: add columns if missing
+    for col, default in [("visibility", "'public'"), ("owner", "NULL"), ("channel_type", "'text'")]:
         try:
             conn.execute(f"ALTER TABLE channels ADD COLUMN {col} TEXT DEFAULT {default}")
         except sqlite3.OperationalError:
             pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS voice_state (
+            channel TEXT NOT NULL,
+            username TEXT NOT NULL,
+            joined_at TEXT NOT NULL,
+            PRIMARY KEY (channel, username)
+        )
+    """)
+    # Clear stale voice state on startup
+    conn.execute("DELETE FROM voice_state")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel, created_at)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS room_members (
@@ -735,22 +745,28 @@ class ChatHandler(BaseHTTPRequestHandler):
             if authenticated_user:
                 members = db.execute("SELECT room, role FROM room_members WHERE username = ?", (authenticated_user,)).fetchall()
                 user_rooms = {m["room"]: m["role"] for m in members}
+            # Get voice state — who's in each voice channel
+            voice_rows = db.execute("SELECT channel, username FROM voice_state").fetchall()
+            voice_map = {}
+            for vr in voice_rows:
+                voice_map.setdefault(vr["channel"], []).append(vr["username"])
             db.close()
 
             channels = []
             for r in rows:
                 ch = dict(r)
                 vis = ch.get("visibility", "public")
+                ch["channel_type"] = ch.get("channel_type", "text")
                 ch["is_member"] = ch["name"] in user_rooms
                 ch["user_role"] = user_rooms.get(ch["name"], None)
-                # Private rooms: show name but mark as locked if not member
                 if vis == "private" and not ch["is_member"]:
                     ch["locked"] = True
-                    # Don't expose topic/owner to non-members
                     ch["topic"] = ""
+                # Voice channels: include who's in the room
+                if ch["channel_type"] == "voice":
+                    ch["voice_members"] = voice_map.get(ch["name"], [])
                 channels.append(ch)
 
-            # Count unique online SSE users
             with sse_lock:
                 online_names = set(c[2] for c in sse_clients if len(c) > 2 and c[2] != "anonymous")
             with ws_lock:
@@ -1246,6 +1262,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             visibility = body.get("visibility", "public")
             if visibility not in ("public", "private"):
                 visibility = "public"
+            channel_type = body.get("channel_type", "text")
+            if channel_type not in ("text", "voice"):
+                channel_type = "text"
 
             db = get_db()
             try:
@@ -1255,8 +1274,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                     return
                 ts = now()
                 db.execute(
-                    "INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (name, display, topic, visibility, creator, creator, ts)
+                    "INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, channel_type, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (name, display, topic, visibility, creator, channel_type, creator, ts)
                 )
                 # Auto-join creator as owner
                 db.execute(
@@ -1409,6 +1428,62 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "owner": owner,
             })
             self.send_json({"ok": True, "message": "Forfragan skickad till agaren"})
+            return
+
+        # API: join voice channel — POST /api/channel/{name}/voice/join
+        if path.startswith("/api/channel/") and path.endswith("/voice/join"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                ch = db.execute("SELECT * FROM channels WHERE name = ? AND channel_type = 'voice'", (room_name,)).fetchone()
+                if not ch:
+                    self.send_json({"ok": False, "error": "voice-kanalen finns inte"}, 404)
+                    return
+                # Leave any other voice channel first
+                db.execute("DELETE FROM voice_state WHERE username = ?", (author,))
+                # Join this one
+                db.execute("INSERT OR REPLACE INTO voice_state (channel, username, joined_at) VALUES (?, ?, ?)", (room_name, author, now()))
+                db.commit()
+                # Get current members
+                members = [r["username"] for r in db.execute("SELECT username FROM voice_state WHERE channel = ?", (room_name,)).fetchall()]
+            finally:
+                db.close()
+            broadcast({"event_type": "voice_joined", "channel": room_name, "username": author, "members": members})
+            self.send_json({"ok": True, "channel": room_name, "members": members})
+            return
+
+        # API: leave voice channel — POST /api/channel/{name}/voice/leave
+        if path.startswith("/api/channel/") and path.endswith("/voice/leave"):
+            parts = path.split("/")
+            room_name = parts[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                db.execute("DELETE FROM voice_state WHERE channel = ? AND username = ?", (room_name, author))
+                db.commit()
+                members = [r["username"] for r in db.execute("SELECT username FROM voice_state WHERE channel = ?", (room_name,)).fetchall()]
+            finally:
+                db.close()
+            broadcast({"event_type": "voice_left", "channel": room_name, "username": author, "members": members})
+            self.send_json({"ok": True})
             return
 
         # API: join a room

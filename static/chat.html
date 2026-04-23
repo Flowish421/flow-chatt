@@ -443,7 +443,6 @@ body {
   <div id="chat-header">
     <h1 id="header-name"># allmant</h1>
     <div class="topic" id="header-topic"></div>
-    <button class="header-btn" id="btn-call" onclick="showCallPicker()" style="display:none;font-size:16px;color:var(--green);border-color:var(--green)" title="Ring nagon">📞 Ring</button>
     <button class="header-btn" id="btn-settings" onclick="showRoomSettings()" style="display:none;font-size:16px;color:var(--accent);border-color:var(--accent)" title="Ruminstellningar / Bjud in">&#9881; Installningar</button>
     <button class="header-btn" id="btn-leave" onclick="leaveRoom()" style="display:none">Lamna</button>
   </div>
@@ -516,6 +515,14 @@ body {
         <input type="radio" name="cm-vis" value="private" onchange="document.getElementById('cm-priv-label').style.borderColor='var(--accent)';document.getElementById('cm-pub-label').style.borderColor='var(--border)'"> Privat
       </label>
     </div>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <label style="flex:1;display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:6px;border:1px solid var(--accent);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)" id="cm-text-label">
+        <input type="radio" name="cm-type" value="text" checked onchange="document.getElementById('cm-text-label').style.borderColor='var(--accent)';document.getElementById('cm-voice-label').style.borderColor='var(--border)'"> # Text
+      </label>
+      <label style="flex:1;display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)" id="cm-voice-label">
+        <input type="radio" name="cm-type" value="voice" onchange="document.getElementById('cm-voice-label').style.borderColor='var(--green)';document.getElementById('cm-text-label').style.borderColor='var(--border)'"> &#128266; Voice
+      </label>
+    </div>
     <div style="display:flex;gap:8px">
       <button onclick="doCreateRoom()" style="flex:1;background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:10px;cursor:pointer">Skapa</button>
       <button onclick="document.getElementById('create-modal').style.display='none'" style="flex:1;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:10px;cursor:pointer">Avbryt</button>
@@ -553,20 +560,9 @@ body {
   <div class="ep-grid" id="ep-grid"></div>
 </div>
 
-<!-- Incoming Call Popup -->
-<div id="incoming-call" style="display:none;position:fixed;top:20px;right:20px;z-index:400;background:var(--bg-surface);border:2px solid var(--green);border-radius:16px;padding:20px;box-shadow:0 8px 40px rgba(52,211,153,0.3);min-width:260px;text-align:center">
-  <div style="font-size:32px;margin-bottom:8px">📞</div>
-  <div style="font-family:var(--font-mono);font-size:14px;color:var(--text-primary);margin-bottom:4px" id="call-from-name"></div>
-  <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:16px">ringer dig...</div>
-  <div style="display:flex;gap:10px;justify-content:center">
-    <button onclick="acceptCall()" style="background:var(--green);border:none;border-radius:50%;width:50px;height:50px;font-size:22px;cursor:pointer;color:#000">📞</button>
-    <button onclick="rejectCall()" style="background:var(--red);border:none;border-radius:50%;width:50px;height:50px;font-size:22px;cursor:pointer;color:#000">✖</button>
-  </div>
-</div>
-
-<!-- In-Call Overlay -->
-<div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--border);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(0,0,0,0.5);display:flex;align-items:center;gap:16px">
-  <div style="font-size:20px">📞</div>
+<!-- Voice Channel Overlay (bottom bar) -->
+<div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--green);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(52,211,153,0.2);align-items:center;gap:16px">
+  <div style="font-size:20px">&#128266;</div>
   <div>
     <div style="font-family:var(--font-mono);font-size:13px;color:var(--green)" id="call-peer-name">Samtal</div>
     <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="call-timer">00:00</div>
@@ -758,28 +754,24 @@ async function loadChannels() {
     list.innerHTML = '';
 
     const system = channelData.filter(c => c.visibility === 'system');
-    const pub = channelData.filter(c => c.visibility === 'public');
-    const priv = channelData.filter(c => c.visibility === 'private');
+    const textChannels = channelData.filter(c => (c.channel_type || 'text') === 'text' && c.visibility !== 'system');
+    const voiceChannels = channelData.filter(c => c.channel_type === 'voice');
 
-    // System rooms (pinned)
+    // System (pinned)
     system.forEach(c => list.appendChild(makeChannelRow(c, 'pin')));
 
-    // Public rooms
-    if (pub.length) {
-      const label = document.createElement('div');
-      label.style.cssText = 'font-family:var(--font-mono);font-size:9px;color:var(--text-muted);padding:10px 10px 4px;letter-spacing:2px;text-transform:uppercase';
-      label.textContent = 'Offentliga';
-      list.appendChild(label);
-      pub.forEach(c => list.appendChild(makeChannelRow(c, 'public')));
+    // Text channels
+    if (textChannels.length) {
+      addSectionLabel(list, 'Text kanaler');
+      textChannels.forEach(c => list.appendChild(makeChannelRow(c, c.visibility === 'private' ? 'private' : 'public')));
     }
 
-    // Private rooms
-    if (priv.length) {
-      const label = document.createElement('div');
-      label.style.cssText = 'font-family:var(--font-mono);font-size:9px;color:var(--text-muted);padding:10px 10px 4px;letter-spacing:2px;text-transform:uppercase';
-      label.textContent = 'Privata';
-      list.appendChild(label);
-      priv.forEach(c => list.appendChild(makeChannelRow(c, 'private')));
+    // Voice channels
+    if (voiceChannels.length) {
+      addSectionLabel(list, 'Voice kanaler');
+      voiceChannels.forEach(c => {
+        list.appendChild(makeVoiceRow(c));
+      });
     }
   } catch(e) {}
 }
@@ -812,6 +804,53 @@ function makeChannelRow(c, type) {
   }
 
   return row;
+}
+
+function addSectionLabel(parent, text) {
+  const label = document.createElement('div');
+  label.style.cssText = 'font-family:var(--font-mono);font-size:9px;color:var(--text-muted);padding:12px 10px 4px;letter-spacing:2px;text-transform:uppercase';
+  label.textContent = text;
+  parent.appendChild(label);
+}
+
+function makeVoiceRow(c) {
+  const wrap = document.createElement('div');
+  const row = document.createElement('div');
+  row.className = 'ch-row' + (currentVoiceChannel === c.name ? ' active' : '');
+  row.dataset.channel = c.name;
+  row.addEventListener('click', () => {
+    if (currentVoiceChannel === c.name) leaveVoiceChannel();
+    else joinVoiceChannel(c.name);
+  });
+
+  const icon = document.createElement('span');
+  icon.className = 'hash';
+  icon.textContent = '\ud83d\udd0a';
+  row.appendChild(icon);
+
+  const chName = document.createElement('span');
+  chName.className = 'ch-name';
+  chName.textContent = c.display_name || c.name;
+  row.appendChild(chName);
+
+  const members = c.voice_members || [];
+  if (members.length) {
+    const count = document.createElement('span');
+    count.style.cssText = 'font-size:10px;color:var(--green);margin-left:auto;font-family:var(--font-mono)';
+    count.textContent = members.length;
+    row.appendChild(count);
+  }
+  wrap.appendChild(row);
+
+  members.forEach((m, i) => {
+    const mRow = document.createElement('div');
+    mRow.style.cssText = 'padding:2px 10px 2px 32px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted)';
+    const prefix = i === members.length - 1 ? '\u2514 ' : '\u251c ';
+    mRow.textContent = prefix + m;
+    if (m === username) mRow.style.color = 'var(--accent)';
+    wrap.appendChild(mRow);
+  });
+  return wrap;
 }
 
 async function sendAccessRequest() {
@@ -901,7 +940,6 @@ async function switchChannel(name) {
   document.getElementById('system-bar').style.display = (currentRoomAccess === 'system') ? '' : 'none';
   document.getElementById('request-status').textContent = '';
   document.getElementById('btn-settings').style.display = (currentRoomAccess === 'owner') ? '' : 'none';
-  document.getElementById('btn-call').style.display = canWrite ? '' : 'none';
   document.getElementById('btn-leave').style.display = (currentRoomAccess === 'write' && name !== 'allmant') ? '' : 'none';
 
   // Show/hide input area
@@ -1180,9 +1218,14 @@ function handleEvent(d) {
     return;
   }
   if (d.event_type === 'ping') return;
-  // WebRTC call signaling
-  if (d.type && d.type.startsWith('call_') || d.type === 'ice_candidate') {
+  // WebRTC voice signaling
+  if (d.type && (d.type.startsWith('call_') || d.type === 'ice_candidate')) {
     handleCallSignal(d);
+    return;
+  }
+  // Voice channel events
+  if (d.event_type === 'voice_joined' || d.event_type === 'voice_left') {
+    handleVoiceEvent(d);
     return;
   }
   if (d.event_type !== 'chat_message') return;
@@ -1577,12 +1620,16 @@ async function doCreateRoom() {
     const res = await fetch('/api/channel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: nameInput, display_name: display, visibility: vis, created_by: username, token: userToken }),
+      body: JSON.stringify({ name: nameInput, display_name: display, visibility: vis, channel_type: document.querySelector('input[name="cm-type"]:checked').value, created_by: username, token: userToken }),
     }).then(r => r.json());
     if (res.ok) {
       document.getElementById('create-modal').style.display = 'none';
       await loadChannels();
-      switchChannel(nameInput);
+      if (document.querySelector('input[name="cm-type"]:checked').value === 'voice') {
+        joinVoiceChannel(nameInput);
+      } else {
+        switchChannel(nameInput);
+      }
     } else {
       alert(res.error || 'Kunde inte skapa rum');
     }
@@ -1771,14 +1818,13 @@ async function handleRoomEvent(d) {
   }
 }
 
-// === Voice Call (WebRTC) ===
-let peerConnection = null;
-let localStream = null;
-let callPeer = null;
-let callTimer = null;
-let callSeconds = 0;
+// === Voice Channels (WebRTC mesh) ===
+let currentVoiceChannel = null;
+let voicePeers = {};  // {username: RTCPeerConnection}
+let localVoiceStream = null;
+let voiceTimer = null;
+let voiceSeconds = 0;
 let isMuted = false;
-let pendingOffer = null;  // {from, offer}
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -1801,196 +1847,172 @@ function sendSignal(data) {
   }
 }
 
-async function showCallPicker() {
-  // Get room members to show who to call
-  try {
-    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/members', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ author: username, token: userToken }),
-    }).then(r => r.json());
-    if (!res.ok || !res.members) return;
-    const others = res.members.filter(m => m.username !== username);
-    if (others.length === 0) {
-      alert('Ingen annan i rummet att ringa.');
-      return;
-    }
-    if (others.length === 1) {
-      startCall(others[0].username);
-      return;
-    }
-    // Multiple members — let user pick
-    const picked = prompt('Vem vill du ringa?\n' + others.map(m => '  ' + m.username).join('\n'));
-    if (picked && others.find(m => m.username === picked.trim())) {
-      startCall(picked.trim());
-    }
-  } catch(e) {}
-}
-
-async function startCall(targetUser) {
-  if (peerConnection) return; // Already in a call
-  callPeer = targetUser;
+// --- Voice Channel: Join ---
+async function joinVoiceChannel(channelName) {
+  if (currentVoiceChannel === channelName) return;
+  if (currentVoiceChannel) await leaveVoiceChannel();
 
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    localVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch(e) {
     alert('Kunde inte komma at mikrofonen. Tillat mikrofon i browsern.');
     return;
   }
 
-  peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
+  const res = await fetch('/api/channel/' + encodeURIComponent(channelName) + '/voice/join', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ author: username, token: userToken }),
+  }).then(r => r.json());
 
-  peerConnection.onicecandidate = (e) => {
-    if (e.candidate) {
-      sendSignal({ type: 'ice_candidate', to: callPeer, candidate: e.candidate });
-    }
-  };
-
-  peerConnection.ontrack = (e) => {
-    const audio = new Audio();
-    audio.srcObject = e.streams[0];
-    audio.play();
-  };
-
-  peerConnection.onconnectionstatechange = () => {
-    if (peerConnection && (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed')) {
-      hangupCall();
-    }
-  };
-
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  sendSignal({ type: 'call_offer', to: callPeer, offer: offer });
-
-  // Show call UI
-  showCallOverlay(callPeer);
-  appendSystem('Ringer ' + callPeer + '...');
-}
-
-function showIncomingCall(from) {
-  document.getElementById('call-from-name').textContent = from;
-  document.getElementById('incoming-call').style.display = 'block';
-}
-
-async function acceptCall() {
-  if (!pendingOffer) return;
-  document.getElementById('incoming-call').style.display = 'none';
-  callPeer = pendingOffer.from;
-
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  } catch(e) {
-    alert('Kunde inte komma at mikrofonen.');
-    rejectCall();
+  if (!res.ok) {
+    localVoiceStream.getTracks().forEach(t => t.stop());
+    localVoiceStream = null;
+    alert(res.error || 'Kunde inte ga med');
     return;
   }
 
-  peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
+  currentVoiceChannel = channelName;
+  // Create peer connections with everyone already in the room
+  const others = (res.members || []).filter(m => m !== username);
+  for (const peer of others) {
+    await createVoicePeer(peer, true);
+  }
 
-  peerConnection.onicecandidate = (e) => {
+  showVoiceOverlay(channelName);
+  loadChannels();
+}
+
+// --- Voice Channel: Leave ---
+async function leaveVoiceChannel() {
+  if (!currentVoiceChannel) return;
+  await fetch('/api/channel/' + encodeURIComponent(currentVoiceChannel) + '/voice/leave', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ author: username, token: userToken }),
+  });
+  cleanupVoice();
+  loadChannels();
+}
+
+function cleanupVoice() {
+  for (const [peer, pc] of Object.entries(voicePeers)) {
+    pc.close();
+  }
+  voicePeers = {};
+  if (localVoiceStream) {
+    localVoiceStream.getTracks().forEach(t => t.stop());
+    localVoiceStream = null;
+  }
+  currentVoiceChannel = null;
+  isMuted = false;
+  clearInterval(voiceTimer);
+  voiceTimer = null;
+  voiceSeconds = 0;
+  document.getElementById('call-overlay').style.display = 'none';
+  document.getElementById('mute-btn').textContent = '\ud83c\udf99';
+}
+
+// --- WebRTC Mesh: create peer connection ---
+async function createVoicePeer(peerName, initiator) {
+  if (voicePeers[peerName]) return;
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  voicePeers[peerName] = pc;
+
+  if (localVoiceStream) {
+    localVoiceStream.getTracks().forEach(t => pc.addTrack(t, localVoiceStream));
+  }
+
+  pc.onicecandidate = (e) => {
     if (e.candidate) {
-      sendSignal({ type: 'ice_candidate', to: callPeer, candidate: e.candidate });
+      sendSignal({ type: 'ice_candidate', to: peerName, candidate: e.candidate, channel: currentVoiceChannel });
     }
   };
 
-  peerConnection.ontrack = (e) => {
+  pc.ontrack = (e) => {
     const audio = new Audio();
     audio.srcObject = e.streams[0];
     audio.play();
   };
 
-  peerConnection.onconnectionstatechange = () => {
-    if (peerConnection && (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed')) {
-      hangupCall();
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      pc.close();
+      delete voicePeers[peerName];
     }
   };
 
-  await peerConnection.setRemoteDescription(pendingOffer.offer);
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-  sendSignal({ type: 'call_answer', to: callPeer, answer: answer });
-
-  pendingOffer = null;
-  showCallOverlay(callPeer);
-  appendSystem('Samtal med ' + callPeer);
-}
-
-function rejectCall() {
-  if (pendingOffer) {
-    sendSignal({ type: 'call_reject', to: pendingOffer.from });
-    pendingOffer = null;
+  if (initiator) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal({ type: 'call_offer', to: peerName, offer: offer, channel: currentVoiceChannel });
   }
-  document.getElementById('incoming-call').style.display = 'none';
 }
 
-function hangupCall() {
-  sendSignal({ type: 'call_hangup', to: callPeer });
-  cleanupCall();
-  appendSystem('Samtalet avslutades');
-}
-
-function cleanupCall() {
-  if (peerConnection) {
-    peerConnection.close();
-    peerConnection = null;
-  }
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
-  }
-  callPeer = null;
-  isMuted = false;
-  clearInterval(callTimer);
-  callTimer = null;
-  callSeconds = 0;
-  document.getElementById('call-overlay').style.display = 'none';
-  document.getElementById('incoming-call').style.display = 'none';
-  document.getElementById('mute-btn').textContent = '🎤';
-}
-
-function showCallOverlay(peer) {
-  document.getElementById('call-peer-name').textContent = peer;
+// --- Voice overlay ---
+function showVoiceOverlay(channelName) {
+  const ch = channelData.find(c => c.name === channelName);
+  document.getElementById('call-peer-name').textContent = '\ud83d\udd0a ' + (ch ? ch.display_name || channelName : channelName);
   document.getElementById('call-timer').textContent = '00:00';
   document.getElementById('call-overlay').style.display = 'flex';
-  callSeconds = 0;
-  clearInterval(callTimer);
-  callTimer = setInterval(() => {
-    callSeconds++;
-    const m = String(Math.floor(callSeconds / 60)).padStart(2, '0');
-    const s = String(callSeconds % 60).padStart(2, '0');
+  voiceSeconds = 0;
+  clearInterval(voiceTimer);
+  voiceTimer = setInterval(() => {
+    voiceSeconds++;
+    const m = String(Math.floor(voiceSeconds / 60)).padStart(2, '0');
+    const s = String(voiceSeconds % 60).padStart(2, '0');
     document.getElementById('call-timer').textContent = m + ':' + s;
   }, 1000);
 }
 
 function toggleMute() {
-  if (!localStream) return;
+  if (!localVoiceStream) return;
   isMuted = !isMuted;
-  localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
-  document.getElementById('mute-btn').textContent = isMuted ? '🔇' : '🎤';
+  localVoiceStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+  document.getElementById('mute-btn').textContent = isMuted ? '\ud83d\udd07' : '\ud83c\udf99';
 }
 
-// Handle incoming WebRTC signaling events
+function hangupCall() { leaveVoiceChannel(); }
+
+// --- Handle voice signaling events ---
 function handleCallSignal(d) {
-  if (d.type === 'call_offer') {
-    pendingOffer = { from: d.from, offer: d.offer };
-    showIncomingCall(d.from);
+  if (d.type === 'call_offer' && currentVoiceChannel) {
+    // Someone sent us an offer — create peer and answer
+    (async () => {
+      const peerName = d.from;
+      if (voicePeers[peerName]) return;
+      await createVoicePeer(peerName, false);
+      const pc = voicePeers[peerName];
+      if (!pc) return;
+      await pc.setRemoteDescription(d.offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal({ type: 'call_answer', to: peerName, answer: answer, channel: currentVoiceChannel });
+    })();
   }
-  if (d.type === 'call_answer' && peerConnection) {
-    peerConnection.setRemoteDescription(d.answer);
+  if (d.type === 'call_answer' && voicePeers[d.from]) {
+    voicePeers[d.from].setRemoteDescription(d.answer);
   }
-  if (d.type === 'ice_candidate' && peerConnection) {
-    peerConnection.addIceCandidate(d.candidate).catch(() => {});
+  if (d.type === 'ice_candidate' && voicePeers[d.from]) {
+    voicePeers[d.from].addIceCandidate(d.candidate).catch(() => {});
   }
-  if (d.type === 'call_reject') {
-    appendSystem((d.from || 'Anvandaren') + ' avvisade samtalet');
-    cleanupCall();
+}
+
+// --- Handle voice_joined/voice_left SSE events ---
+function handleVoiceEvent(d) {
+  if (d.event_type === 'voice_joined' && d.username !== username && d.channel === currentVoiceChannel) {
+    // Someone joined our voice channel — establish peer connection
+    createVoicePeer(d.username, true);
   }
-  if (d.type === 'call_hangup') {
-    appendSystem('Samtalet avslutades');
-    cleanupCall();
+  if (d.event_type === 'voice_left' && d.username !== username) {
+    // Someone left — close their peer
+    if (voicePeers[d.username]) {
+      voicePeers[d.username].close();
+      delete voicePeers[d.username];
+    }
   }
+  // Refresh sidebar to show updated voice members
+  loadChannels();
 }
 
 init();
