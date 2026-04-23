@@ -799,6 +799,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' data:; connect-src 'self' ws: wss:;")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-XSS-Protection", "1; mode=block")
             self.end_headers()
