@@ -443,6 +443,7 @@ body {
   <div id="chat-header">
     <h1 id="header-name"># allmant</h1>
     <div class="topic" id="header-topic"></div>
+    <button class="header-btn" id="btn-call" onclick="showCallPicker()" style="display:none;font-size:16px;color:var(--green);border-color:var(--green)" title="Ring nagon">📞 Ring</button>
     <button class="header-btn" id="btn-settings" onclick="showRoomSettings()" style="display:none;font-size:16px;color:var(--accent);border-color:var(--accent)" title="Ruminstellningar / Bjud in">&#9881; Installningar</button>
     <button class="header-btn" id="btn-leave" onclick="leaveRoom()" style="display:none">Lamna</button>
   </div>
@@ -551,6 +552,30 @@ body {
   </div>
   <div class="ep-grid" id="ep-grid"></div>
 </div>
+
+<!-- Incoming Call Popup -->
+<div id="incoming-call" style="display:none;position:fixed;top:20px;right:20px;z-index:400;background:var(--bg-surface);border:2px solid var(--green);border-radius:16px;padding:20px;box-shadow:0 8px 40px rgba(52,211,153,0.3);min-width:260px;text-align:center">
+  <div style="font-size:32px;margin-bottom:8px">📞</div>
+  <div style="font-family:var(--font-mono);font-size:14px;color:var(--text-primary);margin-bottom:4px" id="call-from-name"></div>
+  <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:16px">ringer dig...</div>
+  <div style="display:flex;gap:10px;justify-content:center">
+    <button onclick="acceptCall()" style="background:var(--green);border:none;border-radius:50%;width:50px;height:50px;font-size:22px;cursor:pointer;color:#000">📞</button>
+    <button onclick="rejectCall()" style="background:var(--red);border:none;border-radius:50%;width:50px;height:50px;font-size:22px;cursor:pointer;color:#000">✖</button>
+  </div>
+</div>
+
+<!-- In-Call Overlay -->
+<div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--border);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(0,0,0,0.5);display:flex;align-items:center;gap:16px">
+  <div style="font-size:20px">📞</div>
+  <div>
+    <div style="font-family:var(--font-mono);font-size:13px;color:var(--green)" id="call-peer-name">Samtal</div>
+    <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="call-timer">00:00</div>
+  </div>
+  <button id="mute-btn" onclick="toggleMute()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Mute">🎤</button>
+  <button onclick="hangupCall()" style="background:var(--red);border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:#000" title="Lagg pa">✖</button>
+</div>
+
+<audio id="ringtone" loop preload="none"><source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" type="audio/wav"></audio>
 
 <script>
 // === State ===
@@ -876,6 +901,7 @@ async function switchChannel(name) {
   document.getElementById('system-bar').style.display = (currentRoomAccess === 'system') ? '' : 'none';
   document.getElementById('request-status').textContent = '';
   document.getElementById('btn-settings').style.display = (currentRoomAccess === 'owner') ? '' : 'none';
+  document.getElementById('btn-call').style.display = canWrite ? '' : 'none';
   document.getElementById('btn-leave').style.display = (currentRoomAccess === 'write' && name !== 'allmant') ? '' : 'none';
 
   // Show/hide input area
@@ -1154,6 +1180,11 @@ function handleEvent(d) {
     return;
   }
   if (d.event_type === 'ping') return;
+  // WebRTC call signaling
+  if (d.type && d.type.startsWith('call_') || d.type === 'ice_candidate') {
+    handleCallSignal(d);
+    return;
+  }
   if (d.event_type !== 'chat_message') return;
   if (d.channel !== currentChannel) return;
   if (d.id && seenIds.has(d.id)) return;
@@ -1737,6 +1768,228 @@ async function handleRoomEvent(d) {
       switchChannel('allmant');
     }
     loadChannels();
+  }
+}
+
+// === Voice Call (WebRTC) ===
+let peerConnection = null;
+let localStream = null;
+let callPeer = null;
+let callTimer = null;
+let callSeconds = 0;
+let isMuted = false;
+let pendingOffer = null;  // {from, offer}
+
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+function sendSignal(data) {
+  data.from = username;
+  // Try WebSocket first
+  if (_ws && _ws.readyState === 1) {
+    _ws.send(JSON.stringify(data));
+  } else {
+    // Fallback: HTTP POST
+    data.token = userToken;
+    fetch('/api/signal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  }
+}
+
+async function showCallPicker() {
+  // Get room members to show who to call
+  try {
+    const res = await fetch('/api/channel/' + encodeURIComponent(currentChannel) + '/members', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken }),
+    }).then(r => r.json());
+    if (!res.ok || !res.members) return;
+    const others = res.members.filter(m => m.username !== username);
+    if (others.length === 0) {
+      alert('Ingen annan i rummet att ringa.');
+      return;
+    }
+    if (others.length === 1) {
+      startCall(others[0].username);
+      return;
+    }
+    // Multiple members — let user pick
+    const picked = prompt('Vem vill du ringa?\n' + others.map(m => '  ' + m.username).join('\n'));
+    if (picked && others.find(m => m.username === picked.trim())) {
+      startCall(picked.trim());
+    }
+  } catch(e) {}
+}
+
+async function startCall(targetUser) {
+  if (peerConnection) return; // Already in a call
+  callPeer = targetUser;
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch(e) {
+    alert('Kunde inte komma at mikrofonen. Tillat mikrofon i browsern.');
+    return;
+  }
+
+  peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
+
+  peerConnection.onicecandidate = (e) => {
+    if (e.candidate) {
+      sendSignal({ type: 'ice_candidate', to: callPeer, candidate: e.candidate });
+    }
+  };
+
+  peerConnection.ontrack = (e) => {
+    const audio = new Audio();
+    audio.srcObject = e.streams[0];
+    audio.play();
+  };
+
+  peerConnection.onconnectionstatechange = () => {
+    if (peerConnection && (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed')) {
+      hangupCall();
+    }
+  };
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+  sendSignal({ type: 'call_offer', to: callPeer, offer: offer });
+
+  // Show call UI
+  showCallOverlay(callPeer);
+  appendSystem('Ringer ' + callPeer + '...');
+}
+
+function showIncomingCall(from) {
+  document.getElementById('call-from-name').textContent = from;
+  document.getElementById('incoming-call').style.display = 'block';
+}
+
+async function acceptCall() {
+  if (!pendingOffer) return;
+  document.getElementById('incoming-call').style.display = 'none';
+  callPeer = pendingOffer.from;
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch(e) {
+    alert('Kunde inte komma at mikrofonen.');
+    rejectCall();
+    return;
+  }
+
+  peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
+
+  peerConnection.onicecandidate = (e) => {
+    if (e.candidate) {
+      sendSignal({ type: 'ice_candidate', to: callPeer, candidate: e.candidate });
+    }
+  };
+
+  peerConnection.ontrack = (e) => {
+    const audio = new Audio();
+    audio.srcObject = e.streams[0];
+    audio.play();
+  };
+
+  peerConnection.onconnectionstatechange = () => {
+    if (peerConnection && (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed')) {
+      hangupCall();
+    }
+  };
+
+  await peerConnection.setRemoteDescription(pendingOffer.offer);
+  const answer = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answer);
+  sendSignal({ type: 'call_answer', to: callPeer, answer: answer });
+
+  pendingOffer = null;
+  showCallOverlay(callPeer);
+  appendSystem('Samtal med ' + callPeer);
+}
+
+function rejectCall() {
+  if (pendingOffer) {
+    sendSignal({ type: 'call_reject', to: pendingOffer.from });
+    pendingOffer = null;
+  }
+  document.getElementById('incoming-call').style.display = 'none';
+}
+
+function hangupCall() {
+  sendSignal({ type: 'call_hangup', to: callPeer });
+  cleanupCall();
+  appendSystem('Samtalet avslutades');
+}
+
+function cleanupCall() {
+  if (peerConnection) {
+    peerConnection.close();
+    peerConnection = null;
+  }
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  callPeer = null;
+  isMuted = false;
+  clearInterval(callTimer);
+  callTimer = null;
+  callSeconds = 0;
+  document.getElementById('call-overlay').style.display = 'none';
+  document.getElementById('incoming-call').style.display = 'none';
+  document.getElementById('mute-btn').textContent = '🎤';
+}
+
+function showCallOverlay(peer) {
+  document.getElementById('call-peer-name').textContent = peer;
+  document.getElementById('call-timer').textContent = '00:00';
+  document.getElementById('call-overlay').style.display = 'flex';
+  callSeconds = 0;
+  clearInterval(callTimer);
+  callTimer = setInterval(() => {
+    callSeconds++;
+    const m = String(Math.floor(callSeconds / 60)).padStart(2, '0');
+    const s = String(callSeconds % 60).padStart(2, '0');
+    document.getElementById('call-timer').textContent = m + ':' + s;
+  }, 1000);
+}
+
+function toggleMute() {
+  if (!localStream) return;
+  isMuted = !isMuted;
+  localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+  document.getElementById('mute-btn').textContent = isMuted ? '🔇' : '🎤';
+}
+
+// Handle incoming WebRTC signaling events
+function handleCallSignal(d) {
+  if (d.type === 'call_offer') {
+    pendingOffer = { from: d.from, offer: d.offer };
+    showIncomingCall(d.from);
+  }
+  if (d.type === 'call_answer' && peerConnection) {
+    peerConnection.setRemoteDescription(d.answer);
+  }
+  if (d.type === 'ice_candidate' && peerConnection) {
+    peerConnection.addIceCandidate(d.candidate).catch(() => {});
+  }
+  if (d.type === 'call_reject') {
+    appendSystem((d.from || 'Anvandaren') + ' avvisade samtalet');
+    cleanupCall();
+  }
+  if (d.type === 'call_hangup') {
+    appendSystem('Samtalet avslutades');
+    cleanupCall();
   }
 }
 

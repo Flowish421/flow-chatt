@@ -483,7 +483,9 @@ class WebSocketConnection:
             if opcode == 0x1:  # Text
                 try:
                     msg = json.loads(payload.decode("utf-8"))
-                    # Client can send ping-type messages to keep alive
+                    # WebRTC signaling relay — send to specific user
+                    if msg.get("type") in ("call_offer", "call_answer", "ice_candidate", "call_reject", "call_hangup"):
+                        send_to_user(msg.get("to"), msg)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
         self.alive = False
@@ -528,6 +530,25 @@ def broadcast(event_data, channel=None):
                 dead.append(i)
         for i in reversed(dead):
             ws_clients.pop(i)
+
+
+def send_to_user(target_username, event_data):
+    """Send an event to a specific user (WebSocket + SSE)."""
+    if not target_username:
+        return
+    # WebSocket clients
+    with ws_lock:
+        for ws in ws_clients:
+            if ws.alive and ws.username == target_username:
+                ws.send_json(event_data)
+    # SSE clients
+    with sse_lock:
+        for entry in sse_clients:
+            if len(entry) > 2 and entry[2] == target_username:
+                try:
+                    entry[0].put_nowait(event_data)
+                except:
+                    pass
 
 
 # --- HTTP Handler ---
@@ -1136,6 +1157,28 @@ class ChatHandler(BaseHTTPRequestHandler):
             broadcast(broadcast_data, channel)
 
             self.send_json({"ok": True, "id": msg_id, "channel": channel})
+            return
+
+        # API: WebRTC signaling relay — POST /api/signal { type, to, from, ... }
+        if path == "/api/signal":
+            sig_type = body.get("type", "")
+            to_user = body.get("to", "")
+            from_user = body.get("from", "")
+            token = body.get("token", "")
+            if not to_user or not from_user or not token:
+                self.send_json({"ok": False, "error": "missing fields"}, 400)
+                return
+            # Verify sender token
+            db = get_db()
+            valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (from_user, token)).fetchone()
+            db.close()
+            if not valid:
+                self.send_json({"ok": False, "error": "invalid token"}, 401)
+                return
+            # Relay signal to target user
+            signal = {k: v for k, v in body.items() if k != "token"}
+            send_to_user(to_user, signal)
+            self.send_json({"ok": True})
             return
 
         # API: delete own message — POST /api/message/:id/delete { author, token }
