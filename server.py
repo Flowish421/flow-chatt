@@ -1334,9 +1334,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                     members = db.execute("SELECT username FROM user_roles WHERE group_id = ? AND role_id = ?", (group_id, rd["id"])).fetchall()
                     rd["members"] = [m["username"] for m in members]
                     roles.append(rd)
+                # Build user assignments map
+                user_assignments = {}
+                all_assignments = db.execute("SELECT username, role_id FROM user_roles WHERE group_id = ?", (group_id,)).fetchall()
+                for a in all_assignments:
+                    user_assignments.setdefault(a["username"], []).append(a["role_id"])
             finally:
                 db.close()
-            self.send_json({"ok": True, "roles": roles})
+            self.send_json({"ok": True, "roles": roles, "user_assignments": user_assignments})
             return
 
         self.send_error(404)
@@ -2318,7 +2323,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     (general_name, "General", "", "public", creator, "text", creator, ts, group_id, "member")
                 )
                 # Auto-create default custom roles
-                for role_name, role_display, role_color, role_pos in [("admin", "Admin", "#e74c3c", 2), ("medlem", "Medlem", "#99aab5", 1)]:
+                for role_name, role_display, role_color, role_pos in [("moderator", "Moderator", "#e74c3c", 2), ("medlem", "Medlem", "#99aab5", 1)]:
                     db.execute(
                         "INSERT INTO group_roles (id, group_id, name, display_name, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (uuid.uuid4().hex, group_id, role_name, role_display, role_color, role_pos, ts)
@@ -2927,7 +2932,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "du ar inte medlem"}, 403)
                     return
                 rows = db.execute("SELECT username, role, joined_at FROM group_members WHERE group_id = ? ORDER BY joined_at", (group_id,)).fetchall()
-                members = [dict(r) for r in rows]
+                members = []
+                for r in rows:
+                    md = dict(r)
+                    roles = db.execute("SELECT role_id FROM user_roles WHERE group_id = ? AND username = ?", (group_id, md["username"])).fetchall()
+                    md["custom_roles"] = [cr["role_id"] for cr in roles]
+                    members.append(md)
             finally:
                 db.close()
             self.send_json({"ok": True, "members": members})
@@ -2973,7 +2983,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not role_name:
                 self.send_json({"ok": False, "error": "name required"}, 400)
                 return
-            role_display = body.get("display_name", role_name)[:100]
+            role_display = body.get("display_name", "").strip()[:100] or body.get("name", "").strip()[:100]
             role_color = body.get("color", "#99aab5")[:10]
             author = body.get("author", "").strip()[:20]
             token = body.get("token", "").strip()
@@ -3154,9 +3164,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                     members = db.execute("SELECT username FROM user_roles WHERE group_id = ? AND role_id = ?", (group_id, rd["id"])).fetchall()
                     rd["members"] = [m["username"] for m in members]
                     roles.append(rd)
+                # Build user assignments map
+                user_assignments = {}
+                all_assignments = db.execute("SELECT username, role_id FROM user_roles WHERE group_id = ?", (group_id,)).fetchall()
+                for a in all_assignments:
+                    user_assignments.setdefault(a["username"], []).append(a["role_id"])
             finally:
                 db.close()
-            self.send_json({"ok": True, "roles": roles})
+            self.send_json({"ok": True, "roles": roles, "user_assignments": user_assignments})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)
