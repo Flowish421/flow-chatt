@@ -2535,6 +2535,52 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "channel": full_name, "group_id": group_id})
             return
 
+        # API: update channel settings — POST /api/group/{id}/channel/{name}/settings
+        if re.match(r'^/api/group/[a-f0-9]+/channel/.+/settings$', path):
+            parts = path.split("/")
+            group_id = parts[3]
+            channel_name = unquote(parts[5])
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            required_role = body.get("required_role", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
+                    return
+                gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not gm or gm["role"] not in ("admin", "owner"):
+                    self.send_json({"ok": False, "error": "bara admin eller agare"}, 403)
+                    return
+                ch = db.execute("SELECT * FROM channels WHERE name = ? AND group_id = ?", (channel_name, group_id)).fetchone()
+                if not ch:
+                    self.send_json({"ok": False, "error": "kanalen finns inte"}, 404)
+                    return
+                # Validate required_role: empty string means 'member' (all members)
+                if not required_role:
+                    required_role = "member"
+                elif required_role not in ("member", "admin", "owner"):
+                    # Check if it's a valid custom role ID
+                    custom = db.execute("SELECT 1 FROM group_roles WHERE id = ? AND group_id = ?", (required_role, group_id)).fetchone()
+                    if not custom:
+                        self.send_json({"ok": False, "error": "ogiltig roll"}, 400)
+                        return
+                db.execute("UPDATE channels SET required_role = ? WHERE name = ? AND group_id = ?", (required_role, channel_name, group_id))
+                db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "group_updated", "group_id": group_id})
+            self.send_json({"ok": True})
+            return
+
         # API: delete channel in group — DELETE /api/group/{id}/channel/{channel_name}
         if re.match(r'^/api/group/[a-f0-9]+/channel/.+$', path) and self.command == "DELETE":
             parts = path.split("/")
