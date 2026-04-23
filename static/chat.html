@@ -362,7 +362,7 @@ body {
   .msg-images img { max-width: 260px; max-height: 200px; }
   .msg-reactions { padding-left: 0; gap: 3px; }
   .reaction-pill { font-size: 12px; padding: 2px 6px; }
-  .msg-del { font-size: 18px !important; padding: 4px 6px !important; }
+  .msg-act.del { font-size: 18px !important; padding: 4px 6px !important; }
 
   /* Input area */
   #input-area { padding: 8px 10px; gap: 6px; }
@@ -374,7 +374,7 @@ body {
   #emoji-btn { padding: 9px 10px !important; font-size: 16px !important; }
   #eph-btn { padding: 9px 10px !important; font-size: 16px !important; }
   #ephemeral-bar { padding: 6px 10px !important; font-size: 12px; }
-  #attach-preview { padding: 4px 10px; }
+  #attach-preview { padding: 4px 10px !important; }
   .ap-thumb { width: 52px; height: 52px; }
 
   /* Emoji picker: bottom sheet style */
@@ -401,6 +401,9 @@ body {
   #login-box input { font-size: 18px; padding: 14px; }
   #login-box button { font-size: 16px; padding: 14px; }
 
+  /* React add button always visible on mobile (no hover) */
+  .react-add-btn { opacity: 1 !important; }
+
   /* Modals */
   #create-modal > div, #settings-modal > div {
     width: 95% !important; max-width: 95% !important;
@@ -423,9 +426,9 @@ body {
 </div>
 
 
-<div id="sidebar">
+<div id="sidebar" role="navigation" aria-label="Kanaler">
   <h2>Rum / Kanaler</h2>
-  <div class="channel-list" id="channel-list"></div>
+  <div class="channel-list" id="channel-list" role="list"></div>
   <button id="new-channel-btn" onclick="showCreateModal()">+ Skapa rum</button>
   <div id="conn-info">
     <span class="dot">&#9679;</span>
@@ -459,7 +462,7 @@ body {
       <button onclick="submitInviteCode()" style="background:var(--green);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:8px 14px;cursor:pointer">Ga med</button>
     </div>
   </div>
-  <div id="messages"></div>
+  <div id="messages" role="log" aria-live="polite" aria-label="Meddelanden"></div>
   <div id="attach-preview"></div>
   <div id="emoji-input-bar">
     <button onclick="insertEmoji('😀')" title="glad">😀</button>
@@ -475,8 +478,8 @@ body {
     <button onclick="insertEmoji('😭')" title="grat">😭</button>
     <button onclick="insertEmoji('🙏')" title="tack">🙏</button>
   </div>
-  <div id="ephemeral-bar" style="display:none;padding:4px 20px;background:var(--bg-surface);font-family:var(--font-mono);font-size:11px;color:var(--amber);display:flex;align-items:center;gap:8px">
-    <span>&#128164; Forsvinner om</span>
+  <div id="ephemeral-bar" style="display:none;padding:4px 20px;background:var(--bg-surface);font-family:var(--font-mono);font-size:11px;color:var(--amber);align-items:center;gap:8px">
+    <span>&#128164; Forsvinner om</span><span style="font-size:9px;color:var(--text-muted);margin-left:2px" title="Meddelandet sparas inte pa servern, men mottagare kan fortfarande ta skarmbilder">(ej sparad)</span>
     <input id="eph-seconds" type="range" min="1" max="30" value="5" style="width:100px;accent-color:var(--amber)">
     <span id="eph-label">5s</span>
     <button onclick="toggleEphemeral()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;margin-left:auto" title="Stang av">&#10005;</button>
@@ -661,10 +664,11 @@ function validateNick() {
   btn.disabled = true;
 
   if (v.length === 0) { err.textContent = ''; return; }
-  if (v.length < 2) { err.textContent = 'Minst 2 tecken'; return; }
-  if (v.length > 20) { err.textContent = 'Max 20 tecken'; return; }
+  if (v.length < 2) { err.textContent = 'Minst 2 tecken'; err.style.color = 'var(--red)'; return; }
+  if (v.length > 20) { err.textContent = 'Max 20 tecken'; err.style.color = 'var(--red)'; return; }
   if (!/^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]+$/.test(v)) {
     err.textContent = 'Bara bokstaver, siffror, - och _';
+    err.style.color = 'var(--red)';
     return;
   }
 
@@ -995,6 +999,7 @@ async function loadMessages(channel) {
     // Clear only after data is ready — prevents blink
     el.innerHTML = '';
     seenIds.clear();
+    msgElements.clear();
     lastDateShown = '';
     const msgs = (data.messages || []).reverse();
     if (msgs.length === 0) {
@@ -1009,18 +1014,19 @@ async function loadMessages(channel) {
   } catch(e) {
     el.innerHTML = '<div class="msg-system">Kunde inte ladda meddelanden</div>';
   }
-  scrollBottom();
+  scrollBottom(true);
 }
 
 function addDateSeparator(ts) {
   if (!ts) return;
-  const day = ts.substring(0, 10);
+  // Use local date for grouping so separators match the user's timezone
+  const d = new Date(ts);
+  const day = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
   if (day !== lastDateShown) {
     lastDateShown = day;
     const el = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = 'msg-day';
-    const d = new Date(ts);
     div.textContent = d.toLocaleDateString('sv-SE', { weekday: 'long', day: 'numeric', month: 'long' });
     el.appendChild(div);
   }
@@ -1040,7 +1046,12 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
   let html = `<span class="time">${esc(time)}</span><span class="author">${esc(author)}</span>`;
   if (ephemeral) html += `<span class="eph-badge">${ephemeral}s</span>`;
   if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
-    html += `<span class="content">${fmtContent(content)}</span>`;
+    const MAX_DISPLAY = 1000;
+    if (content.length > MAX_DISPLAY) {
+      html += `<span class="content">${fmtContent(content.substring(0, MAX_DISPLAY))}<span style="color:var(--text-muted)">...</span> <a href="#" class="show-more-link" style="color:var(--accent);font-size:11px">Visa mer</a></span>`;
+    } else {
+      html += `<span class="content">${fmtContent(content)}</span>`;
+    }
   }
   // Action buttons (not ephemeral, not temp)
   if (msgId && !ephemeral && !msgId.startsWith('tmp-')) {
@@ -1063,6 +1074,15 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
     hideBtn.title = div.classList.contains('msg-hidden') ? 'Visa meddelandet' : 'Dolj detta meddelande';
     hideBtn.innerHTML = div.classList.contains('msg-hidden') ? '&#128065;' : '&#128064;';
   });
+  // Wire "show more" for truncated messages
+  const showMoreLink = div.querySelector('.show-more-link');
+  if (showMoreLink) {
+    showMoreLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      const contentSpan = div.querySelector('.content');
+      if (contentSpan) contentSpan.innerHTML = fmtContent(content);
+    });
+  }
 
   // Render attachments
   if (attachments && attachments.length) {
@@ -1194,9 +1214,15 @@ function appendSystem(text) {
   el.appendChild(div);
 }
 
-function scrollBottom() {
+function isNearBottom() {
   const el = document.getElementById('messages');
-  el.scrollTop = el.scrollHeight;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+}
+function scrollBottom(force) {
+  const el = document.getElementById('messages');
+  if (force || isNearBottom()) {
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
 function openLightbox(src) {
@@ -1226,6 +1252,14 @@ function handleEvent(d) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ author: username, token: userToken, username: d.from }),
       });
+    }
+    return;
+  }
+  if (d.event_type === 'channel_deleted') {
+    loadChannels();
+    if (currentChannel === d.channel) {
+      currentChannel = 'allmant';
+      switchChannel('allmant');
     }
     return;
   }
@@ -1273,9 +1307,10 @@ function connectWebSocket() {
   if (_ws && _ws.readyState === WebSocket.OPEN) return;
   if (_ws) { try { _ws.close(); } catch(e) {} }
   if (eventSource) { try { eventSource.close(); eventSource = null; } catch(e) {} }
+  clearInterval(window._sseCheck);
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = proto + '//' + location.host + '/ws?user=' + encodeURIComponent(username);
+  const url = proto + '//' + location.host + '/ws?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken);
   console.log('WS connecting:', url);
 
   try {
@@ -1324,7 +1359,7 @@ function connectSSE() {
   if (eventSource) { try { eventSource.close(); } catch(e) {} }
 
   console.log('SSE connecting...');
-  eventSource = new EventSource('/api/events?user=' + encodeURIComponent(username));
+  eventSource = new EventSource('/api/events?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken));
   window._sseAlive = Date.now();
 
   eventSource.onopen = () => {
@@ -1342,6 +1377,9 @@ function connectSSE() {
   };
 
   eventSource.onerror = () => {
+    // Close current eventSource before scheduling reconnect to prevent leak
+    try { eventSource.close(); } catch(e) {}
+    eventSource = null;
     _reconnectAttempt++;
     const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 30000);
     setTimeout(connectSSE, delay);
@@ -1349,7 +1387,7 @@ function connectSSE() {
 
   clearInterval(window._sseCheck);
   window._sseCheck = setInterval(() => {
-    if (Date.now() - (window._sseAlive || 0) > 30000) {
+    if (Date.now() - (window._sseAlive || 0) > 60000) {
       _reconnectAttempt++;
       connectRealtime();
     }
@@ -1358,6 +1396,8 @@ function connectSSE() {
 
 // === Files / Images ===
 function onFiles(fileList) {
+  const canWrite = (currentRoomAccess === 'write' || currentRoomAccess === 'owner');
+  if (!canWrite) return;
   for (const file of fileList) {
     if (!file.type.startsWith('image/')) continue;
     if (file.size > 5 * 1024 * 1024) {
@@ -1459,7 +1499,7 @@ async function send() {
   const tempId = 'tmp-' + Date.now();
   addDateSeparator(new Date().toISOString());
   appendMsg(username, text || '', 'self', new Date().toISOString(), attachments, tempId, [], ephSec);
-  scrollBottom();
+  scrollBottom(true);
 
   try {
     const payload = {
@@ -1476,8 +1516,14 @@ async function send() {
       body: JSON.stringify(payload),
     }).then(r => r.json());
     if (res.id) seenIds.add(res.id);
-    if (!res.ok) appendSystem('Fel: ' + (res.error || 'unknown'));
+    if (!res.ok) {
+      const tmpEl = msgElements.get(tempId);
+      if (tmpEl) { tmpEl.remove(); msgElements.delete(tempId); }
+      appendSystem('Fel: ' + (res.error || 'unknown'));
+    }
   } catch(e) {
+    const tmpEl = msgElements.get(tempId);
+    if (tmpEl) { tmpEl.remove(); msgElements.delete(tempId); }
     appendSystem('Kunde inte skicka: ' + e.message);
   }
 }
@@ -1508,7 +1554,7 @@ function toggleEmojiPicker(event) {
   emojiPickerMode = 'input';
   const rect = event.target.getBoundingClientRect();
   picker.style.left = Math.min(rect.left, window.innerWidth - 340) + 'px';
-  picker.style.top = (rect.top - 280) + 'px';
+  picker.style.top = Math.max(rect.top - 280, 8) + 'px';
   picker.classList.add('on');
   showEmojiTab('smileys', picker.querySelector('.ep-tab'));
 }
@@ -1571,7 +1617,9 @@ function fmtContent(s) {
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   // URL auto-linking with safe attribute escaping
   h = h.replace(/(https?:\/\/[^\s<]+)/g, function(url) {
-    const safeUrl = url.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    // Decode HTML entities back to raw URL for the href attribute
+    const rawUrl = url.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    const safeUrl = rawUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="color:var(--accent)">' + url + '</a>';
   });
   return h;
@@ -1584,6 +1632,15 @@ function fmtContent(s) {
 // 2. It destroyed legitimate users' sessions when DevTools was opened
 // 3. It blocked accessibility tools and legitimate browser features
 // The token in localStorage is protected by the same-origin policy and CSP headers.
+
+// Close lightbox and emoji picker with Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.getElementById('lightbox').classList.remove('on');
+    const picker = document.getElementById('emoji-picker');
+    if (picker.classList.contains('on')) { picker.classList.remove('on'); emojiPickerMode = null; }
+  }
+});
 
 // Disable drag on page (except file drop zone)
 document.addEventListener('dragstart', e => { if (e.target.tagName !== 'IMG') e.preventDefault(); });
@@ -1869,6 +1926,10 @@ function sendSignal(data) {
 function setupAudioPipeline(rawStream) {
   try {
     audioCtx = new AudioContext({ sampleRate: 48000 });
+    // Resume AudioContext if suspended (browser autoplay policy)
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
     sourceNode = audioCtx.createMediaStreamSource(rawStream);
     destNode = audioCtx.createMediaStreamDestination();
 
@@ -1878,10 +1939,10 @@ function setupAudioPipeline(rawStream) {
     highpassNode.frequency.value = 80;
     highpassNode.Q.value = 0.7;
 
-    // Lowpass filter — cut hiss above 8kHz
+    // Lowpass filter — cut hiss above 18kHz (preserves voice clarity)
     lowpassNode = audioCtx.createBiquadFilter();
     lowpassNode.type = 'lowpass';
-    lowpassNode.frequency.value = 8000;
+    lowpassNode.frequency.value = 18000;
     lowpassNode.Q.value = 0.7;
 
     // Noise gate — silence below threshold
@@ -1897,7 +1958,6 @@ function setupAudioPipeline(rawStream) {
       const threshold = 0.008;
       const target = rms > threshold ? 1 : 0;
       noiseGateNode.gain.setTargetAtTime(target, audioCtx.currentTime, 0.015);
-      gateAnimFrame = requestAnimationFrame(processGate);
     }
 
     if (noiseReduction) {
@@ -1906,7 +1966,8 @@ function setupAudioPipeline(rawStream) {
       lowpassNode.connect(analyser);
       lowpassNode.connect(noiseGateNode);
       noiseGateNode.connect(destNode);
-      processGate();
+      // Use setInterval instead of requestAnimationFrame — RAF stops in background tabs
+      gateAnimFrame = setInterval(processGate, 20);
     } else {
       sourceNode.connect(destNode);
     }
@@ -1919,7 +1980,7 @@ function setupAudioPipeline(rawStream) {
 }
 
 function cleanupAudioPipeline() {
-  if (gateAnimFrame) { cancelAnimationFrame(gateAnimFrame); gateAnimFrame = null; }
+  if (gateAnimFrame) { clearInterval(gateAnimFrame); gateAnimFrame = null; }
   if (audioCtx && audioCtx.state !== 'closed') {
     try { audioCtx.close(); } catch(e) {}
   }
@@ -1942,7 +2003,7 @@ function toggleNoiseReduction() {
     if (highpassNode) highpassNode.disconnect();
     if (lowpassNode) lowpassNode.disconnect();
     if (noiseGateNode) noiseGateNode.disconnect();
-    if (gateAnimFrame) { cancelAnimationFrame(gateAnimFrame); gateAnimFrame = null; }
+    if (gateAnimFrame) { clearInterval(gateAnimFrame); gateAnimFrame = null; }
 
     if (on) {
       const analyser = audioCtx.createAnalyser();
@@ -1953,14 +2014,13 @@ function toggleNoiseReduction() {
         analyser.getFloatTimeDomainData(buf);
         const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
         noiseGateNode.gain.setTargetAtTime(rms > 0.008 ? 1 : 0, audioCtx.currentTime, 0.015);
-        gateAnimFrame = requestAnimationFrame(processGate);
       }
       sourceNode.connect(highpassNode);
       highpassNode.connect(lowpassNode);
       lowpassNode.connect(analyser);
       lowpassNode.connect(noiseGateNode);
       noiseGateNode.connect(destNode);
-      processGate();
+      gateAnimFrame = setInterval(processGate, 20);
     } else {
       sourceNode.connect(destNode);
     }
@@ -1971,15 +2031,25 @@ function toggleNoiseReduction() {
 
 // --- Opus SDP tuning (64kbps, FEC, DTX — like Discord) ---
 function tuneOpusSDP(sdp) {
+  // Dynamically find Opus payload type instead of hardcoding 111
+  const opusMatch = sdp.match(/a=rtpmap:(\d+) opus\/48000/);
+  if (!opusMatch) return sdp;
+  const pt = opusMatch[1];
+  const fmtpRegex = new RegExp('a=fmtp:' + pt + ' ([^\\r\\n]*)', 'g');
   return sdp.replace(
-    /a=fmtp:111 ([^\r\n]*)/g,
-    'a=fmtp:111 $1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;usedtx=1;useinbandfec=1;cbr=0'
+    fmtpRegex,
+    'a=fmtp:' + pt + ' $1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;usedtx=1;useinbandfec=1;cbr=0'
   );
 }
+
+let joiningVoice = false;  // Guard against concurrent voice joins
 
 // --- Voice Channel: Join ---
 async function joinVoiceChannel(channelName) {
   if (currentVoiceChannel === channelName) return;
+  if (joiningVoice) return;
+  joiningVoice = true;
+  try {
   if (currentVoiceChannel) await leaveVoiceChannel();
 
   try {
@@ -2015,6 +2085,7 @@ async function joinVoiceChannel(channelName) {
 
   showVoiceOverlay(channelName);
   loadChannels();
+  } finally { joiningVoice = false; }
 }
 
 // --- Voice Channel: Leave ---
@@ -2036,14 +2107,8 @@ function cleanupVoice() {
   }
   voicePeers = {};
   // Clean up audio elements
-  if (typeof voiceAudioElements !== 'undefined') {
-    for (const [peer, audio] of Object.entries(voiceAudioElements)) {
-      audio.pause();
-      audio.srcObject = null;
-    }
-  }
-  // Release all remote audio elements to free resources
   for (const [peer, audio] of Object.entries(voiceAudioElements)) {
+    audio.pause();
     audio.srcObject = null;
   }
   voiceAudioElements = {};
@@ -2067,6 +2132,9 @@ async function createVoicePeer(peerName, initiator) {
   if (voicePeers[peerName]) return;
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   voicePeers[peerName] = pc;
+  // ICE candidate buffer — queue candidates until remote description is set
+  pc._iceCandidateBuffer = [];
+  pc._remoteDescriptionSet = false;
 
   const streamToSend = processedStream || localVoiceStream;
   if (streamToSend) {
@@ -2100,13 +2168,37 @@ async function createVoicePeer(peerName, initiator) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-      pc.close();
-      delete voicePeers[peerName];
-      if (voiceAudioElements[peerName]) {
-        voiceAudioElements[peerName].srcObject = null;
-        delete voiceAudioElements[peerName];
-      }
+    if (pc.connectionState === 'failed') {
+      // Attempt ICE restart instead of just closing
+      console.log('ICE restart for peer:', peerName);
+      (async () => {
+        try {
+          const offer = await pc.createOffer({ iceRestart: true });
+          offer.sdp = tuneOpusSDP(offer.sdp);
+          await pc.setLocalDescription(offer);
+          sendSignal({ type: 'call_offer', to: peerName, offer: pc.localDescription, channel: currentVoiceChannel });
+        } catch(e) {
+          // ICE restart failed — clean up
+          pc.close();
+          delete voicePeers[peerName];
+          if (voiceAudioElements[peerName]) {
+            voiceAudioElements[peerName].srcObject = null;
+            delete voiceAudioElements[peerName];
+          }
+        }
+      })();
+    } else if (pc.connectionState === 'disconnected') {
+      // Give it a moment to recover before cleaning up
+      setTimeout(() => {
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          pc.close();
+          delete voicePeers[peerName];
+          if (voiceAudioElements[peerName]) {
+            voiceAudioElements[peerName].srcObject = null;
+            delete voiceAudioElements[peerName];
+          }
+        }
+      }, 5000);
     }
   };
 
@@ -2137,8 +2229,8 @@ function showVoiceOverlay(channelName) {
 function toggleMute() {
   if (!localVoiceStream) return;
   isMuted = !isMuted;
-  const stream = processedStream || localVoiceStream;
-  stream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+  // Mute raw mic input so no audio flows through the pipeline at all
+  localVoiceStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
   document.getElementById('mute-btn').textContent = isMuted ? '\ud83d\udd07' : '\ud83c\udf99';
 }
 
@@ -2147,6 +2239,7 @@ function hangupCall() { leaveVoiceChannel(); }
 // --- Audio Device Settings ---
 let micAnalyser = null;
 let micLevelInterval = null;
+let micLevelCtx = null;
 let selectedMicId = localStorage.getItem('flow-mic-id') || '';
 let selectedSpeakerId = localStorage.getItem('flow-speaker-id') || '';
 
@@ -2244,9 +2337,9 @@ function startMicLevel() {
   stopMicLevel();
   if (!localVoiceStream) return;
   try {
-    const ctx = new AudioContext();
-    const source = ctx.createMediaStreamSource(localVoiceStream);
-    micAnalyser = ctx.createAnalyser();
+    micLevelCtx = new AudioContext();
+    const source = micLevelCtx.createMediaStreamSource(localVoiceStream);
+    micAnalyser = micLevelCtx.createAnalyser();
     micAnalyser.fftSize = 256;
     source.connect(micAnalyser);
     const data = new Uint8Array(micAnalyser.frequencyBinCount);
@@ -2265,6 +2358,10 @@ function stopMicLevel() {
   clearInterval(micLevelInterval);
   micLevelInterval = null;
   micAnalyser = null;
+  if (micLevelCtx && micLevelCtx.state !== 'closed') {
+    try { micLevelCtx.close(); } catch(e) {}
+  }
+  micLevelCtx = null;
 }
 
 // --- Handle voice signaling events ---
@@ -2296,6 +2393,12 @@ function handleCallSignal(d) {
       const pc = voicePeers[peerName];
       if (!pc) return;
       await pc.setRemoteDescription(d.offer);
+      pc._remoteDescriptionSet = true;
+      // Flush buffered ICE candidates
+      if (pc._iceCandidateBuffer && pc._iceCandidateBuffer.length) {
+        pc._iceCandidateBuffer.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+        pc._iceCandidateBuffer = [];
+      }
       const answer = await pc.createAnswer();
       answer.sdp = tuneOpusSDP(answer.sdp);
       await pc.setLocalDescription(answer);
@@ -2303,18 +2406,35 @@ function handleCallSignal(d) {
     })();
   }
   if (d.type === 'call_answer' && voicePeers[d.from]) {
-    voicePeers[d.from].setRemoteDescription(d.answer);
+    const pc = voicePeers[d.from];
+    pc.setRemoteDescription(d.answer).then(() => {
+      pc._remoteDescriptionSet = true;
+      // Flush buffered ICE candidates
+      if (pc._iceCandidateBuffer && pc._iceCandidateBuffer.length) {
+        pc._iceCandidateBuffer.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+        pc._iceCandidateBuffer = [];
+      }
+    }).catch(() => {});
   }
   if (d.type === 'ice_candidate' && voicePeers[d.from]) {
-    voicePeers[d.from].addIceCandidate(d.candidate).catch(() => {});
+    const pc = voicePeers[d.from];
+    if (pc._remoteDescriptionSet) {
+      pc.addIceCandidate(d.candidate).catch(() => {});
+    } else {
+      // Buffer until remote description is set
+      if (!pc._iceCandidateBuffer) pc._iceCandidateBuffer = [];
+      pc._iceCandidateBuffer.push(d.candidate);
+    }
   }
 }
 
 // --- Handle voice_joined/voice_left SSE events ---
 function handleVoiceEvent(d) {
   if (d.event_type === 'voice_joined' && d.username !== username && d.channel === currentVoiceChannel) {
-    // Someone joined our voice channel — establish peer connection
-    createVoicePeer(d.username, true);
+    // Someone joined our voice channel — do NOT initiate here.
+    // The joiner initiates connections to existing members (in joinVoiceChannel).
+    // We just prepare a non-initiating peer so we're ready to receive their offer.
+    createVoicePeer(d.username, false);
   }
   if (d.event_type === 'voice_left' && d.username !== username) {
     // Someone left — close their peer and clean up audio

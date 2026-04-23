@@ -16,6 +16,9 @@ import hmac
 import struct
 import base64
 import socket
+import signal
+import sys
+import gzip
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
@@ -31,7 +34,7 @@ MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024  # 2MB per image base64
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via environment variable
 
 WELCOME_TEXT = """Valkommen till Flow Chatt!
 
@@ -60,23 +63,25 @@ visibility_lock = threading.Lock()
 def load_caches():
     """Load membership and visibility caches from DB."""
     db = get_db()
-    # Membership
-    rows = db.execute("SELECT room, username FROM room_members").fetchall()
-    cache = {}
-    for r in rows:
-        cache.setdefault(r["room"], set()).add(r["username"])
-    with membership_lock:
-        membership_cache.clear()
-        membership_cache.update(cache)
-    # Visibility
-    rows = db.execute("SELECT name, visibility FROM channels").fetchall()
-    vcache = {}
-    for r in rows:
-        vcache[r["name"]] = r["visibility"] or "public"
-    with visibility_lock:
-        visibility_cache.clear()
-        visibility_cache.update(vcache)
-    db.close()
+    try:
+        # Membership
+        rows = db.execute("SELECT room, username FROM room_members").fetchall()
+        cache = {}
+        for r in rows:
+            cache.setdefault(r["room"], set()).add(r["username"])
+        with membership_lock:
+            membership_cache.clear()
+            membership_cache.update(cache)
+        # Visibility
+        rows = db.execute("SELECT name, visibility FROM channels").fetchall()
+        vcache = {}
+        for r in rows:
+            vcache[r["name"]] = r["visibility"] or "public"
+        with visibility_lock:
+            visibility_cache.clear()
+            visibility_cache.update(vcache)
+    finally:
+        db.close()
 
 
 def cache_add_member(room, username):
@@ -295,7 +300,7 @@ def now():
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     _harden_conn(conn)
     return conn
@@ -351,42 +356,45 @@ def get_online(timeout=120):
 admin_sessions = set()
 
 
+admin_login_attempts = {}  # ip -> [timestamps] for brute-force protection
+admin_login_lock = threading.Lock()
+MAX_ADMIN_LOGIN_ATTEMPTS = 5  # per 15 minutes
+
+
+def check_admin_lockout(ip):
+    """Returns True if the IP is locked out from admin login attempts."""
+    now_t = time.time()
+    with admin_login_lock:
+        if ip not in admin_login_attempts:
+            return False
+        admin_login_attempts[ip] = [t for t in admin_login_attempts[ip] if now_t - t < 900]
+        return len(admin_login_attempts[ip]) >= MAX_ADMIN_LOGIN_ATTEMPTS
+
+
+def record_admin_failure(ip):
+    """Record a failed admin login attempt."""
+    with admin_login_lock:
+        if ip not in admin_login_attempts:
+            admin_login_attempts[ip] = []
+        admin_login_attempts[ip].append(time.time())
+
+
+def clear_admin_failures(ip):
+    """Clear failed login attempts on successful login."""
+    with admin_login_lock:
+        admin_login_attempts.pop(ip, None)
+
+
 def check_admin(headers):
     token = headers.get("X-Admin-Token", "")
+    if not token:
+        return False
     return token in admin_sessions
 
 
 # --- SSE Clients ---
 sse_clients = []  # list of (queue, channel_filter, username, ip, connected_at)
 sse_lock = threading.Lock()
-
-
-def broadcast(event_data, channel=None):
-    """Send event to SSE clients. For private rooms, only send to members."""
-    # Check if this is a private channel
-    filter_members = None
-    if channel:
-        with visibility_lock:
-            vis = visibility_cache.get(channel, "public")
-        if vis == "private":
-            with membership_lock:
-                filter_members = membership_cache.get(channel, set())
-
-    with sse_lock:
-        dead = []
-        for i, entry in enumerate(sse_clients):
-            # Filter: private rooms only go to members
-            if filter_members is not None:
-                sse_user = entry[2] if len(entry) > 2 else ""
-                if sse_user not in filter_members:
-                    continue
-            try:
-                if entry[0].qsize() < MAX_QUEUE_SIZE:
-                    entry[0].put_nowait(event_data)
-            except:
-                dead.append(i)
-        for i in reversed(dead):
-            sse_clients.pop(i)
 
 
 # --- WebSocket Clients ---
@@ -502,16 +510,17 @@ class WebSocketConnection:
 
 
 def broadcast(event_data, channel=None):
-    """Send event to ALL clients (SSE + WebSocket). Filter private rooms."""
+    """Send event to ALL clients (SSE + WebSocket). Filter private rooms.
+    Collects targets under lock, sends outside lock to avoid holding locks during I/O."""
     filter_members = None
     if channel:
         with visibility_lock:
             vis = visibility_cache.get(channel, "public")
         if vis == "private":
             with membership_lock:
-                filter_members = membership_cache.get(channel, set())
+                filter_members = membership_cache.get(channel, set()).copy()
 
-    # SSE clients
+    # SSE clients — collect targets under lock, enqueue is fast (no I/O)
     with sse_lock:
         dead = []
         for i, entry in enumerate(sse_clients):
@@ -527,8 +536,9 @@ def broadcast(event_data, channel=None):
         for i in reversed(dead):
             sse_clients.pop(i)
 
-    # WebSocket clients
+    # WebSocket clients — collect targets under lock, send outside lock
     with ws_lock:
+        ws_targets = []
         dead = []
         for i, ws in enumerate(ws_clients):
             if not ws.alive:
@@ -536,10 +546,18 @@ def broadcast(event_data, channel=None):
                 continue
             if filter_members is not None and ws.username not in filter_members:
                 continue
-            if not ws.send_json(event_data):
-                dead.append(i)
+            ws_targets.append(ws)
         for i in reversed(dead):
             ws_clients.pop(i)
+
+    # Send outside lock to avoid holding ws_lock during I/O
+    ws_dead = []
+    for ws in ws_targets:
+        if not ws.send_json(event_data):
+            ws_dead.append(ws)
+    if ws_dead:
+        with ws_lock:
+            ws_clients[:] = [c for c in ws_clients if c not in ws_dead]
 
 
 def send_to_user(target_username, event_data):
@@ -571,6 +589,20 @@ class ChatHandler(BaseHTTPRequestHandler):
         super().setup()
         self.request.settimeout(REQUEST_TIMEOUT)
 
+    def send_error(self, code, message=None, explain=None):
+        """Override to return JSON errors with CORS headers."""
+        error_msg = message or self.responses.get(code, ("Error",))[0]
+        body = json.dumps({"ok": False, "error": error_msg}).encode()
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def real_ip(self):
         """Get real client IP with validation."""
         forwarded = self.headers.get("X-Forwarded-For", "")
@@ -586,8 +618,16 @@ class ChatHandler(BaseHTTPRequestHandler):
             sys.stderr.write(f"{self.real_ip()} - {format % args}\n")
 
     def send_json(self, data, status=200):
-        body = json.dumps(data).encode()
-        self.send_response(status)
+        raw = json.dumps(data).encode()
+        # Gzip if client supports it and response is large enough
+        accept_enc = self.headers.get("Accept-Encoding", "")
+        if "gzip" in accept_enc and len(raw) > 512:
+            body = gzip.compress(raw)
+            self.send_response(status)
+            self.send_header("Content-Encoding", "gzip")
+        else:
+            body = raw
+            self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -663,8 +703,6 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_html("static/admin.html")
             return
 
-            return
-
         # WebSocket upgrade
         if path == "/ws":
             upgrade = self.headers.get("Upgrade", "").lower()
@@ -689,9 +727,20 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.flush()
 
-            # Parse username from query
+            # Parse username and verify token from query
             ws_user = params.get("user", ["anonymous"])[0][:20]
+            ws_token = params.get("token", [""])[0]
             client_ip = self.real_ip()
+            if ws_user != "anonymous" and ws_token:
+                db_ws = get_db()
+                try:
+                    valid = db_ws.execute("SELECT username FROM users WHERE username = ? AND token = ?", (ws_user, ws_token)).fetchone()
+                finally:
+                    db_ws.close()
+                if not valid:
+                    ws_user = "anonymous"
+            elif ws_user != "anonymous":
+                ws_user = "anonymous"  # No token provided — demote to anonymous
             touch_online(ws_user, client_ip, "ws")
 
             ws_conn = WebSocketConnection(self, ws_user, client_ip)
@@ -718,9 +767,17 @@ class ChatHandler(BaseHTTPRequestHandler):
                     ws_clients[:] = [c for c in ws_clients if c is not ws_conn]
             return
 
-        # API: health
+        # API: health (verifies DB connectivity)
         if path == "/api/health":
-            self.send_json({"ok": True})
+            try:
+                db_h = get_db()
+                try:
+                    db_h.execute("SELECT 1").fetchone()
+                finally:
+                    db_h.close()
+                self.send_json({"ok": True})
+            except Exception as e:
+                self.send_json({"ok": False, "error": "db unreachable"}, 503)
             return
 
         # API: channels — filtered by visibility + membership
@@ -731,24 +788,28 @@ class ChatHandler(BaseHTTPRequestHandler):
             authenticated_user = None
             if req_user and req_token:
                 db = get_db()
-                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
-                db.close()
+                try:
+                    valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                finally:
+                    db.close()
                 if valid:
                     authenticated_user = req_user
 
             db = get_db()
-            rows = db.execute("SELECT * FROM channels ORDER BY created_at").fetchall()
-            # Get user's memberships
-            user_rooms = {}
-            if authenticated_user:
-                members = db.execute("SELECT room, role FROM room_members WHERE username = ?", (authenticated_user,)).fetchall()
-                user_rooms = {m["room"]: m["role"] for m in members}
-            # Get voice state — who's in each voice channel
-            voice_rows = db.execute("SELECT channel, username FROM voice_state").fetchall()
-            voice_map = {}
-            for vr in voice_rows:
-                voice_map.setdefault(vr["channel"], []).append(vr["username"])
-            db.close()
+            try:
+                rows = db.execute("SELECT * FROM channels ORDER BY created_at").fetchall()
+                # Get user's memberships
+                user_rooms = {}
+                if authenticated_user:
+                    members = db.execute("SELECT room, role FROM room_members WHERE username = ?", (authenticated_user,)).fetchall()
+                    user_rooms = {m["room"]: m["role"] for m in members}
+                # Get voice state — who's in each voice channel
+                voice_rows = db.execute("SELECT channel, username FROM voice_state").fetchall()
+                voice_map = {}
+                for vr in voice_rows:
+                    voice_map.setdefault(vr["channel"], []).append(vr["username"])
+            finally:
+                db.close()
 
             channels = []
             for r in rows:
@@ -775,6 +836,11 @@ class ChatHandler(BaseHTTPRequestHandler):
         # API: messages for a channel (access controlled)
         if path.startswith("/api/channel/") and path.endswith("/messages"):
             parts = path.split("/")
+            # Validate channel name from URL path (same regex as message POST)
+            parts[3] = unquote(parts[3])[:50]
+            if not re.match(r'^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$', parts[3]):
+                self.send_json({"ok": False, "error": "invalid channel name"}, 400)
+                return
             channel = parts[3]
             try:
                 limit = min(int(params.get("limit", ["100"])[0]), 500)
@@ -787,35 +853,46 @@ class ChatHandler(BaseHTTPRequestHandler):
             auth_user = None
             if req_user and req_token:
                 db_v = get_db()
-                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
-                db_v.close()
+                try:
+                    valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                finally:
+                    db_v.close()
                 if valid:
                     auth_user = req_user
 
+            before = params.get("before", [None])[0]  # cursor: ISO timestamp for pagination
+
             db = get_db()
-            room, access = check_room_access(db, channel, auth_user)
-            if room is None:
+            try:
+                room, access = check_room_access(db, channel, auth_user)
+                if room is None:
+                    self.send_error(404)
+                    return
+                if before:
+                    rows = db.execute(
+                        "SELECT id, channel, author, content, role, attachments, created_at FROM messages WHERE channel = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?",
+                        (channel, before, limit)
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT id, channel, author, content, role, attachments, created_at FROM messages WHERE channel = ? ORDER BY created_at DESC LIMIT ?",
+                        (channel, limit)
+                    ).fetchall()
+                msg_ids = [r["id"] for r in rows]
+                react_map = {}
+                if msg_ids:
+                    placeholders = ",".join("?" * len(msg_ids))
+                    reacts = db.execute(
+                        f"SELECT message_id, emoji, author FROM reactions WHERE message_id IN ({placeholders})",
+                        msg_ids
+                    ).fetchall()
+                    for rx in reacts:
+                        mid = rx["message_id"]
+                        if mid not in react_map:
+                            react_map[mid] = []
+                        react_map[mid].append({"emoji": rx["emoji"], "author": rx["author"]})
+            finally:
                 db.close()
-                self.send_error(404)
-                return
-            rows = db.execute(
-                "SELECT id, channel, author, content, role, attachments, created_at FROM messages WHERE channel = ? ORDER BY created_at DESC LIMIT ?",
-                (channel, limit)
-            ).fetchall()
-            msg_ids = [r["id"] for r in rows]
-            react_map = {}
-            if msg_ids:
-                placeholders = ",".join("?" * len(msg_ids))
-                reacts = db.execute(
-                    f"SELECT message_id, emoji, author FROM reactions WHERE message_id IN ({placeholders})",
-                    msg_ids
-                ).fetchall()
-                for rx in reacts:
-                    mid = rx["message_id"]
-                    if mid not in react_map:
-                        react_map[mid] = []
-                    react_map[mid].append({"emoji": rx["emoji"], "author": rx["author"]})
-            db.close()
             messages = []
             for r in rows:
                 m = dict(r)
@@ -829,6 +906,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "channel": channel,
                 "count": len(messages),
+                "has_more": len(messages) == limit,
                 "messages": messages
             })
             return
@@ -836,6 +914,20 @@ class ChatHandler(BaseHTTPRequestHandler):
         # API: SSE events
         if path == "/api/events":
             client_ip = self.real_ip()
+
+            # Verify token for SSE connection
+            sse_user = params.get("user", ["anonymous"])[0][:20]
+            sse_token = params.get("token", [""])[0]
+            if sse_user != "anonymous" and sse_token:
+                db_sse = get_db()
+                try:
+                    valid = db_sse.execute("SELECT username FROM users WHERE username = ? AND token = ?", (sse_user, sse_token)).fetchone()
+                finally:
+                    db_sse.close()
+                if not valid:
+                    sse_user = "anonymous"
+            elif sse_user != "anonymous":
+                sse_user = "anonymous"
 
             # Per-IP SSE limit to prevent one attacker from consuming all slots
             with sse_lock:
@@ -851,11 +943,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
             self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
             self.end_headers()
 
             q = Queue(maxsize=MAX_QUEUE_SIZE)
-            sse_user = params.get("user", ["anonymous"])[0][:20]
             connected_at = time.time()
             touch_online(sse_user, client_ip, "connected")
             with sse_lock:
@@ -915,14 +1007,19 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not ADMIN_PASS:
                 self.send_json({"ok": False, "error": "admin not configured"}, 403)
                 return
-            if u == ADMIN_USER and hmac.compare_digest(p, ADMIN_PASS):
+            if check_admin_lockout(client_ip):
+                self.send_json({"ok": False, "error": "for manga felaktiga forsok, forsok igen senare"}, 429)
+                return
+            if hmac.compare_digest(u, ADMIN_USER) and hmac.compare_digest(p, ADMIN_PASS):
+                clear_admin_failures(client_ip)
                 if len(admin_sessions) >= MAX_ADMIN_SESSIONS:
                     admin_sessions.clear()
                 session = uuid.uuid4().hex
                 admin_sessions.add(session)
                 self.send_json({"ok": True, "token": session})
             else:
-                time.sleep(0.5)  # Slow down brute force
+                record_admin_failure(client_ip)
+                time.sleep(1)  # Slow down brute force
                 self.send_json({"ok": False, "error": "Fel losenord"}, 401)
             return
 
@@ -932,14 +1029,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "unauthorized"}, 401)
                 return
             db = get_db()
-            users = [dict(r) for r in db.execute("SELECT username, created_at FROM users ORDER BY created_at DESC").fetchall()]
-            channels = [dict(r) for r in db.execute("SELECT * FROM channels ORDER BY created_at DESC").fetchall()]
-            msg_count = db.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
-            user_stats = {}
-            for row in db.execute("SELECT author, COUNT(*) as c FROM messages GROUP BY author ORDER BY c DESC").fetchall():
-                user_stats[row["author"]] = row["c"]
-            recent = [dict(r) for r in db.execute("SELECT id, channel, author, content, created_at FROM messages ORDER BY created_at DESC LIMIT 50").fetchall()]
-            db.close()
+            try:
+                users = [dict(r) for r in db.execute("SELECT username, created_at FROM users ORDER BY created_at DESC").fetchall()]
+                channels = [dict(r) for r in db.execute("SELECT * FROM channels ORDER BY created_at DESC").fetchall()]
+                msg_count = db.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
+                user_stats = {}
+                for row in db.execute("SELECT author, COUNT(*) as c FROM messages GROUP BY author ORDER BY c DESC").fetchall():
+                    user_stats[row["author"]] = row["c"]
+                recent = [dict(r) for r in db.execute("SELECT id, channel, author, content, created_at FROM messages ORDER BY created_at DESC LIMIT 50").fetchall()]
+            finally:
+                db.close()
             online = get_online()
             sse_count = len(sse_clients)
             self.send_json({
@@ -968,9 +1067,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                 db.execute("DELETE FROM users WHERE username = ?", (uname,))
                 db.execute("DELETE FROM messages WHERE author = ?", (uname,))
                 db.execute("DELETE FROM reactions WHERE author = ?", (uname,))
+                db.execute("DELETE FROM room_members WHERE username = ?", (uname,))
+                db.execute("DELETE FROM invites WHERE created_by = ?", (uname,))
+                db.execute("DELETE FROM voice_state WHERE username = ?", (uname,))
                 db.commit()
             finally:
                 db.close()
+            import sys; sys.stderr.write(f"ADMIN_ACTION: delete-user '{uname}' from {client_ip}\n")
             self.send_json({"ok": True, "deleted": uname})
             return
 
@@ -986,11 +1089,14 @@ class ChatHandler(BaseHTTPRequestHandler):
             db = get_db()
             try:
                 db.execute("DELETE FROM users WHERE username = ?", (uname,))
+                db.execute("DELETE FROM room_members WHERE username = ?", (uname,))
+                db.execute("DELETE FROM voice_state WHERE username = ?", (uname,))
                 db.commit()
             finally:
                 db.close()
             with online_lock:
                 online_users.pop(uname, None)
+            import sys; sys.stderr.write(f"ADMIN_ACTION: kick-user '{uname}' from {client_ip}\n")
             self.send_json({"ok": True, "kicked": uname})
             return
 
@@ -1017,10 +1123,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 )
                 db.commit()
             except sqlite3.IntegrityError:
-                db.close()
                 self.send_json({"ok": False, "error": "Namnet ar redan taget"}, 409)
                 return
-            db.close()
+            finally:
+                db.close()
             self.send_json({"ok": True, "username": uname, "token": token})
             return
 
@@ -1032,11 +1138,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "missing fields"}, 400)
                 return
             db = get_db()
-            row = db.execute(
-                "SELECT username FROM users WHERE username = ? AND token = ?",
-                (uname, token)
-            ).fetchone()
-            db.close()
+            try:
+                row = db.execute(
+                    "SELECT username FROM users WHERE username = ? AND token = ?",
+                    (uname, token)
+                ).fetchone()
+            finally:
+                db.close()
             if row:
                 self.send_json({"ok": True, "username": uname})
             else:
@@ -1050,8 +1158,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "available": False})
                 return
             db = get_db()
-            row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
-            db.close()
+            try:
+                row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
+            finally:
+                db.close()
             self.send_json({"ok": True, "available": row is None, "username": uname})
             return
 
@@ -1068,11 +1178,13 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             if token:
                 db_check = get_db()
-                valid = db_check.execute(
-                    "SELECT username FROM users WHERE username = ? AND token = ?",
-                    (author, token)
-                ).fetchone()
-                db_check.close()
+                try:
+                    valid = db_check.execute(
+                        "SELECT username FROM users WHERE username = ? AND token = ?",
+                        (author, token)
+                    ).fetchone()
+                finally:
+                    db_check.close()
                 if not valid:
                     self.send_json({"ok": False, "error": "invalid token"}, 401)
                     return
@@ -1082,8 +1194,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             # Room access check
             db_ac = get_db()
-            room, access = check_room_access(db_ac, channel, author)
-            db_ac.close()
+            try:
+                room, access = check_room_access(db_ac, channel, author)
+            finally:
+                db_ac.close()
             if room is None:
                 self.send_error(404)
                 return
@@ -1101,9 +1215,17 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             role = "user"
             attachments = body.get("attachments", [])[:5]
+            ALLOWED_IMAGE_MIMES = ("data:image/png;", "data:image/jpeg;", "data:image/gif;", "data:image/webp;", "data:image/bmp;")
             total_att_size = 0
             for att in attachments:
-                att_size = len(att.get("dataUrl", ""))
+                if not isinstance(att, dict):
+                    self.send_json({"ok": False, "error": "invalid attachment format"}, 400)
+                    return
+                data_url = att.get("dataUrl", "")
+                if data_url and not data_url.startswith(ALLOWED_IMAGE_MIMES):
+                    self.send_json({"ok": False, "error": "only image attachments allowed (png, jpeg, gif, webp, bmp)"}, 400)
+                    return
+                att_size = len(data_url)
                 if att_size > MAX_ATTACHMENT_SIZE:
                     self.send_json({"ok": False, "error": "attachment too large (max 2MB)"}, 400)
                     return
@@ -1122,9 +1244,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             touch_online(author, client_ip, channel)
 
             # Ephemeral mode: message is NOT saved, only broadcast + auto-expires
-            ephemeral = body.get("ephemeral", 0)
+            try:
+                ephemeral = int(body.get("ephemeral", 0))
+            except (ValueError, TypeError):
+                ephemeral = 0
             if ephemeral:
-                ephemeral = max(1, min(30, int(ephemeral)))  # 1-30 seconds
+                ephemeral = max(1, min(30, ephemeral))  # 1-30 seconds
                 msg_id = "eph-" + uuid.uuid4().hex[:12]
                 ts = now()
                 broadcast_data = {
@@ -1184,8 +1309,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 return
             # Verify sender token
             db = get_db()
-            valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (from_user, token)).fetchone()
-            db.close()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (from_user, token)).fetchone()
+            finally:
+                db.close()
             if not valid:
                 self.send_json({"ok": False, "error": "invalid token"}, 401)
                 return
@@ -1241,6 +1368,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not re.match(r'^[a-z0-9\u00e5\u00e4\u00f6][a-z0-9\u00e5\u00e4\u00f6_-]{0,48}$', name):
                 self.send_json({"ok": False, "error": "invalid channel name"}, 400)
                 return
+            # Protect system room names from being created/overwritten
+            if name == "allmant":
+                self.send_json({"ok": False, "error": "det namnet ar reserverat"}, 400)
+                return
             display = body.get("display_name", name)[:100]
             topic = body.get("topic", "")[:200]
             creator = body.get("created_by", "anonymous")[:20]
@@ -1248,8 +1379,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             if token:
                 db_v = get_db()
-                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (creator, token)).fetchone()
-                db_v.close()
+                try:
+                    valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (creator, token)).fetchone()
+                finally:
+                    db_v.close()
                 if not valid:
                     self.send_json({"ok": False, "error": "invalid token"}, 401)
                     return
@@ -1270,14 +1403,18 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if ch_count >= MAX_CHANNELS:
                     self.send_json({"ok": False, "error": "max antal kanaler uppnatt"}, 403)
                     return
+                # Check if channel name already exists
+                if db.execute("SELECT 1 FROM channels WHERE name = ?", (name,)).fetchone():
+                    self.send_json({"ok": False, "error": "kanalen finns redan"}, 409)
+                    return
                 ts = now()
                 db.execute(
-                    "INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, channel_type, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO channels (name, display_name, topic, visibility, owner, channel_type, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (name, display, topic, visibility, creator, channel_type, creator, ts)
                 )
                 # Auto-join creator as owner
                 db.execute(
-                    "INSERT OR IGNORE INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'owner', ?)",
+                    "INSERT INTO room_members (room, username, role, joined_at) VALUES (?, ?, 'owner', ?)",
                     (name, creator, ts)
                 )
                 db.commit()
@@ -1300,11 +1437,17 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not emoji:
                 self.send_json({"ok": False, "error": "emoji required"}, 400)
                 return
+            # Reject plain ASCII text as reactions — must contain emoji (non-ASCII)
+            if all(ord(c) < 0x200 for c in emoji):
+                self.send_json({"ok": False, "error": "only emoji reactions allowed"}, 400)
+                return
 
             if token:
                 db_v = get_db()
-                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
-                db_v.close()
+                try:
+                    valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                finally:
+                    db_v.close()
                 if not valid:
                     self.send_json({"ok": False, "error": "invalid token"}, 401)
                     return
@@ -1314,6 +1457,12 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             db = get_db()
             try:
+                # Verify message exists
+                msg_row = db.execute("SELECT id, channel FROM messages WHERE id = ?", (message_id,)).fetchone()
+                if not msg_row:
+                    self.send_json({"ok": False, "error": "meddelandet finns inte"}, 404)
+                    return
+
                 existing = db.execute(
                     "SELECT id FROM reactions WHERE message_id = ? AND emoji = ? AND author = ?",
                     (message_id, emoji, author)
@@ -1365,21 +1514,24 @@ class ChatHandler(BaseHTTPRequestHandler):
             del_token = body.get("token", "")
             if del_user and del_token:
                 db_v = get_db()
-                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (del_user, del_token)).fetchone()
-                if valid:
-                    owner_row = db_v.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (channel, del_user)).fetchone()
-                    if owner_row and owner_row["role"] == "owner":
-                        is_owner = True
-                db_v.close()
+                try:
+                    valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (del_user, del_token)).fetchone()
+                    if valid:
+                        owner_row = db_v.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (channel, del_user)).fetchone()
+                        if owner_row and owner_row["role"] == "owner":
+                            is_owner = True
+                finally:
+                    db_v.close()
             if not is_admin and not is_owner:
                 self.send_json({"ok": False, "error": "unauthorized"}, 401)
                 return
             db = get_db()
             try:
-                db.execute("DELETE FROM messages WHERE channel = ?", (channel,))
                 db.execute("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel = ?)", (channel,))
+                db.execute("DELETE FROM messages WHERE channel = ?", (channel,))
                 db.execute("DELETE FROM room_members WHERE room = ?", (channel,))
                 db.execute("DELETE FROM invites WHERE room = ?", (channel,))
+                db.execute("DELETE FROM voice_state WHERE channel = ?", (channel,))
                 db.execute("DELETE FROM channels WHERE name = ?", (channel,))
                 db.commit()
             finally:
@@ -1389,6 +1541,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 membership_cache.pop(channel, None)
             with visibility_lock:
                 visibility_cache.pop(channel, None)
+            broadcast({"event_type": "channel_deleted", "channel": channel})
             self.send_json({"ok": True})
             return
 
@@ -1415,10 +1568,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 display = str(room["display_name"] or room_name)
             finally:
                 db.close()
-            # Broadcast to ALL clients — owner filters client-side
-            import sys
-            sys.stderr.write(f"ACCESS_REQUEST: {author} -> {room_name} (owner: {owner}), SSE clients: {len(sse_clients)}\n")
-            broadcast({
+            # Send only to the room owner — not to all clients
+            send_to_user(owner, {
                 "event_type": "access_request",
                 "room": room_name,
                 "display_name": display,
@@ -1447,6 +1598,11 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if not ch:
                     self.send_json({"ok": False, "error": "voice-kanalen finns inte"}, 404)
                     return
+                # Access check: private voice channels require membership
+                if (ch["visibility"] or "public") == "private":
+                    if not db.execute("SELECT 1 FROM room_members WHERE room = ? AND username = ?", (room_name, author)).fetchone():
+                        self.send_json({"ok": False, "error": "du har inte tillgang till den har kanalen"}, 403)
+                        return
                 # Leave any other voice channel first
                 db.execute("DELETE FROM voice_state WHERE username = ?", (author,))
                 # Join this one
@@ -1456,7 +1612,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 members = [r["username"] for r in db.execute("SELECT username FROM voice_state WHERE channel = ?", (room_name,)).fetchall()]
             finally:
                 db.close()
-            broadcast({"event_type": "voice_joined", "channel": room_name, "username": author, "members": members})
+            broadcast({"event_type": "voice_joined", "channel": room_name, "username": author, "members": members}, room_name)
             self.send_json({"ok": True, "channel": room_name, "members": members})
             return
 
@@ -1480,7 +1636,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 members = [r["username"] for r in db.execute("SELECT username FROM voice_state WHERE channel = ?", (room_name,)).fetchall()]
             finally:
                 db.close()
-            broadcast({"event_type": "voice_left", "channel": room_name, "username": author, "members": members})
+            broadcast({"event_type": "voice_left", "channel": room_name, "username": author, "members": members}, room_name)
             self.send_json({"ok": True})
             return
 
@@ -1549,10 +1705,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                         db.execute("UPDATE room_members SET role = 'owner' WHERE room = ? AND username = ?", (room_name, next_member["username"]))
                         db.execute("UPDATE channels SET owner = ? WHERE name = ?", (next_member["username"], room_name))
                     else:
-                        # No members left — delete room
+                        # No members left — delete room and all associated data
+                        db.execute("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE channel = ?)", (room_name,))
                         db.execute("DELETE FROM messages WHERE channel = ?", (room_name,))
                         db.execute("DELETE FROM invites WHERE room = ?", (room_name,))
+                        db.execute("DELETE FROM voice_state WHERE channel = ?", (room_name,))
                         db.execute("DELETE FROM channels WHERE name = ?", (room_name,))
+                        with visibility_lock:
+                            visibility_cache.pop(room_name, None)
                 db.commit()
             finally:
                 db.close()
@@ -1595,8 +1755,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                     )
                     db.commit()
                     cache_add_member(room_name, invitee)
-                    # Notify via SSE
-                    broadcast({"event_type": "invited", "room": room_name, "username": invitee, "display_name": room["display_name"] or room_name})
+                    # Notify only the invited user
+                    send_to_user(invitee, {"event_type": "invited", "room": room_name, "username": invitee, "display_name": room["display_name"] or room_name})
                     self.send_json({"ok": True, "invited": invitee})
                     return
 
@@ -1607,7 +1767,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                         self.send_json({"ok": False, "error": "max 10 inbjudningskoder per rum"}, 400)
                         return
                     code = uuid.uuid4().hex[:16]
-                    uses = int(body.get("uses", 10))
+                    try:
+                        uses = max(1, min(100, int(body.get("uses", 10))))
+                    except (ValueError, TypeError):
+                        uses = 10
                     db.execute(
                         "INSERT INTO invites (code, room, created_by, created_at, uses_left) VALUES (?, ?, ?, ?, ?)",
                         (code, room_name, author, now(), uses)
@@ -1691,7 +1854,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             cache_remove_member(room_name, target)
-            broadcast({"event_type": "kicked", "room": room_name, "username": target})
+            send_to_user(target, {"event_type": "kicked", "room": room_name, "username": target})
             self.send_json({"ok": True, "kicked": target})
             return
 
@@ -1699,28 +1862,32 @@ class ChatHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/channel/") and path.endswith("/members"):
             parts = path.split("/")
             room_name = parts[3]
-            req_user = params.get("user", [None])[0] if hasattr(params, 'get') else None
-            # For POST, get from body
+            # Parse query params for GET-style calls via do_DELETE->do_POST
+            qs = parse_qs(urlparse(self.path).query)
+            req_user = qs.get("user", [None])[0]
+            req_token = qs.get("token", [None])[0]
+            # For POST, get from body if not in query
             if not req_user:
                 req_user = body.get("author", "")
                 req_token = body.get("token", "")
-            else:
-                req_token = params.get("token", [None])[0]
             auth_user = None
             if req_user and req_token:
                 db_v = get_db()
-                valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
-                db_v.close()
+                try:
+                    valid = db_v.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                finally:
+                    db_v.close()
                 if valid:
                     auth_user = req_user
             db = get_db()
-            room, access = check_room_access(db, room_name, auth_user)
-            if room is None:
+            try:
+                room, access = check_room_access(db, room_name, auth_user)
+                if room is None:
+                    self.send_error(404)
+                    return
+                members = [dict(r) for r in db.execute("SELECT username, role, joined_at FROM room_members WHERE room = ? ORDER BY joined_at", (room_name,)).fetchall()]
+            finally:
                 db.close()
-                self.send_error(404)
-                return
-            members = [dict(r) for r in db.execute("SELECT username, role, joined_at FROM room_members WHERE room = ? ORDER BY joined_at", (room_name,)).fetchall()]
-            db.close()
             self.send_json({"ok": True, "room": room_name, "members": members})
             return
 
@@ -1765,9 +1932,28 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 if __name__ == "__main__":
+    # Startup warnings
+    if not ADMIN_PASS:
+        sys.stderr.write("WARNING: ADMIN_PASS not set — admin panel is disabled.\n")
+    if CORS_ORIGIN == "*":
+        sys.stderr.write("WARNING: CORS_ORIGIN is '*' — set to your domain in production.\n")
+    if DB_PATH.startswith("/tmp") or DB_PATH.startswith("\\tmp"):
+        sys.stderr.write(f"WARNING: DB_PATH is '{DB_PATH}' — data will be lost on restart in ephemeral environments.\n")
+
     init_db()
     load_caches()
     server = ThreadedHTTPServer((HOST, PORT), ChatHandler)
+
+    # Graceful shutdown on SIGTERM (container orchestrators, Render, etc.)
+    def _sigterm_handler(signum, frame):
+        sys.stderr.write("Received SIGTERM, shutting down gracefully...\n")
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except (OSError, ValueError):
+        pass  # SIGTERM not available on some platforms (e.g. Windows services)
+
     print(f"Cortex Chat running on http://{HOST}:{PORT}")
     print(f"Share with friends: open the URL above")
     try:
