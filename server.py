@@ -1957,11 +1957,11 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if not ch:
                     self.send_json({"ok": False, "error": "voice-kanalen finns inte"}, 404)
                     return
-                # Access check: private voice channels require membership
-                if (ch["visibility"] or "public") == "private":
-                    if not db.execute("SELECT 1 FROM room_members WHERE room = ? AND username = ?", (room_name, author)).fetchone():
-                        self.send_json({"ok": False, "error": "du har inte tillgang till den har kanalen"}, 403)
-                        return
+                # Access check: use check_room_access for full role/group verification
+                _, access = check_room_access(db, room_name, author)
+                if access is None or access in ("read", "locked"):
+                    self.send_json({"ok": False, "error": "du har inte tillgang till den har kanalen"}, 403)
+                    return
                 # Leave any other voice channel first
                 db.execute("DELETE FROM voice_state WHERE username = ?", (author,))
                 # Join this one
