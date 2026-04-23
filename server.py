@@ -19,6 +19,9 @@ import socket
 import signal
 import sys
 import gzip
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
@@ -35,6 +38,24 @@ ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via environment variable
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+
+DISPOSABLE_DOMAINS = {
+    "mailinator.com","guerrillamail.com","guerrillamail.de","tempmail.com","throwaway.email",
+    "yopmail.com","10minutemail.com","trashmail.com","fakeinbox.com","sharklasers.com",
+    "guerrillamailblock.com","grr.la","dispostable.com","mailnesia.com","maildrop.cc",
+    "discard.email","tmpmail.net","tmpmail.org","bupmail.com","emailondeck.com",
+    "tempr.email","temp-mail.org","mohmal.com","burnermail.io","inboxbear.com",
+    "mailcatch.com","mintemail.com","tempinbox.com","getnada.com","emailfake.com",
+    "crazymailing.com","tmail.ws","tempmailo.com","luxusmail.org","trashmail.me",
+    "harakirimail.com","spamgourmet.com","mytemp.email","mailsac.com","mailtemp.net",
+    "guerrillamail.info","mailexpire.com","throwam.com","filzmail.com","getairmail.com",
+    "meltmail.com","spamavert.com","trashmail.net","mailnull.com","spamfree24.org",
+    "jetable.org","trashinbox.com","tempail.com","receiveee.com","temp-mail.io",
+    "minutemail.com","tempmailer.com","fakemailgenerator.com",
+}
+EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 WELCOME_TEXT = """Valkomstguide till Flow Chatt
 ---
@@ -491,6 +512,26 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # Migration: add email column to users
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+    except sqlite3.OperationalError:
+        pass
+    # Pending verification codes table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_codes (
+            email TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            username TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            attempts INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
     # Seed the system room "allmant" (Guide channel, read-only instructions)
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at)
@@ -543,6 +584,74 @@ def check_rate_limit(ip):
             return False
         rate_limits[ip].append(now_t)
         return True
+
+
+# --- Email verification rate limiting ---
+email_rate = {}  # email -> last_send_timestamp
+email_rate_lock = threading.Lock()
+ip_email_rate = {}  # ip -> [timestamps] for hourly cap
+ip_email_rate_lock = threading.Lock()
+
+
+def is_disposable_email(email):
+    domain = email.rsplit("@", 1)[-1].lower()
+    return domain in DISPOSABLE_DOMAINS
+
+
+def send_verification_email(to_email, code):
+    if not SMTP_USER or not SMTP_PASS:
+        print(f"SMTP not configured. Code for {to_email}: {code}", file=sys.stderr)
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Flow Chatt - Verifieringskod"
+        msg["From"] = SMTP_USER
+        msg["To"] = to_email
+
+        text = f"Din verifieringskod for Flow Chatt: {code}\n\nKoden gar ut om 10 minuter."
+        html = f"""<div style="font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:40px;border-radius:12px;max-width:400px;margin:0 auto">
+            <h2 style="color:#4f8ff7;margin:0 0 20px">Flow Chatt</h2>
+            <p>Din verifieringskod:</p>
+            <div style="background:#16213e;padding:20px;border-radius:8px;text-align:center;font-size:32px;letter-spacing:8px;color:#34d399;font-weight:bold;margin:20px 0">{code}</div>
+            <p style="color:#888;font-size:12px">Koden gar ut om 10 minuter. Om du inte begarde detta kan du ignorera mailet.</p>
+        </div>"""
+
+        msg.attach(MIMEText(text, "plain"))
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as s:
+            s.starttls()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Email send error: {e}", file=sys.stderr)
+        return False
+
+
+def check_email_rate(email, ip):
+    """Returns (allowed, error_message). Enforces 1 per 60s per email, 5 per hour per IP."""
+    now_t = time.time()
+    with email_rate_lock:
+        last = email_rate.get(email, 0)
+        if now_t - last < 60:
+            return False, "Vanta minst 60 sekunder mellan kodforskningar"
+    with ip_email_rate_lock:
+        if ip not in ip_email_rate:
+            ip_email_rate[ip] = []
+        ip_email_rate[ip] = [t for t in ip_email_rate[ip] if now_t - t < 3600]
+        if len(ip_email_rate[ip]) >= 5:
+            return False, "For manga kodforfragan fran denna IP, forsok igen senare"
+    return True, ""
+
+
+def record_email_send(email, ip):
+    """Record that a code was sent."""
+    now_t = time.time()
+    with email_rate_lock:
+        email_rate[email] = now_t
+    with ip_email_rate_lock:
+        ip_email_rate.setdefault(ip, []).append(now_t)
 
 
 # --- Online tracking ---
@@ -1523,8 +1632,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "kicked": uname})
             return
 
-        # API: register username
+        # API: register username (fallback when SMTP not configured)
         if path == "/api/register":
+            if SMTP_USER:
+                self.send_json({"ok": False, "error": "use /api/register/send-code"}, 400)
+                return
             uname = body.get("username", "").strip()[:20]
             if not uname or len(uname) < 2:
                 self.send_json({"ok": False, "error": "Namn maste vara 2-20 tecken"}, 400)
@@ -1551,6 +1663,159 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             self.send_json({"ok": True, "username": uname, "token": token})
+            return
+
+        # API: send verification code (step 1 of email registration)
+        if path == "/api/register/send-code":
+            email = body.get("email", "").strip().lower()[:254]
+            uname = body.get("username", "").strip()[:20]
+            if not email or not EMAIL_RE.match(email):
+                self.send_json({"ok": False, "error": "Ogiltig e-postadress"}, 400)
+                return
+            if is_disposable_email(email):
+                self.send_json({"ok": False, "error": "Engangsmailadresser ar inte tillatna"}, 400)
+                return
+            if not uname or len(uname) < 2:
+                self.send_json({"ok": False, "error": "Namn maste vara 2-20 tecken"}, 400)
+                return
+            if not re.match(r'^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]{2,20}$', uname):
+                self.send_json({"ok": False, "error": "Bara bokstaver, siffror, - och _"}, 400)
+                return
+
+            # Rate limit check
+            allowed, err_msg = check_email_rate(email, client_ip)
+            if not allowed:
+                self.send_json({"ok": False, "error": err_msg}, 429)
+                return
+
+            db = get_db()
+            try:
+                # Check user count
+                user_count = db.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+                if user_count >= MAX_USERS:
+                    self.send_json({"ok": False, "error": "Max antal anvandare uppnatt"}, 403)
+                    return
+                # Check if username already taken
+                existing_user = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
+                if existing_user:
+                    self.send_json({"ok": False, "error": "Namnet ar redan taget"}, 409)
+                    return
+                # Check if email already used
+                existing_email = db.execute("SELECT username FROM users WHERE email = ?", (email,)).fetchone()
+                if existing_email:
+                    self.send_json({"ok": False, "error": "E-postadressen ar redan registrerad"}, 409)
+                    return
+
+                # Generate 6-digit code
+                import random
+                code = f"{random.randint(0, 999999):06d}"
+                expires_at = time.time() + 600  # 10 minutes
+
+                # Upsert pending code
+                db.execute("DELETE FROM pending_codes WHERE email = ?", (email,))
+                db.execute(
+                    "INSERT INTO pending_codes (email, code, username, expires_at, attempts, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+                    (email, code, uname, expires_at, now())
+                )
+                db.commit()
+            finally:
+                db.close()
+
+            # Send email
+            send_verification_email(email, code)
+            record_email_send(email, client_ip)
+
+            self.send_json({"ok": True, "message": "Kod skickad"})
+            return
+
+        # API: verify code and complete registration (step 2)
+        if path == "/api/register/verify":
+            email = body.get("email", "").strip().lower()[:254]
+            code = body.get("code", "").strip()[:10]
+            uname = body.get("username", "").strip()[:20]
+            if not email or not code or not uname:
+                self.send_json({"ok": False, "error": "Alla falt kravs"}, 400)
+                return
+
+            db = get_db()
+            try:
+                row = db.execute("SELECT * FROM pending_codes WHERE email = ?", (email,)).fetchone()
+                if not row:
+                    self.send_json({"ok": False, "error": "Ingen kod hittades, begare en ny"}, 404)
+                    return
+
+                # Check expiry
+                if time.time() > row["expires_at"]:
+                    db.execute("DELETE FROM pending_codes WHERE email = ?", (email,))
+                    db.commit()
+                    self.send_json({"ok": False, "error": "Koden har gatt ut, begare en ny"}, 410)
+                    return
+
+                # Check attempts
+                if row["attempts"] >= 5:
+                    db.execute("DELETE FROM pending_codes WHERE email = ?", (email,))
+                    db.commit()
+                    self.send_json({"ok": False, "error": "For manga forsok, begare en ny kod"}, 429)
+                    return
+
+                # Verify code
+                if row["code"] != code:
+                    db.execute("UPDATE pending_codes SET attempts = attempts + 1 WHERE email = ?", (email,))
+                    db.commit()
+                    remaining = 4 - row["attempts"]
+                    self.send_json({"ok": False, "error": f"Fel kod, {remaining} forsok kvar"}, 401)
+                    return
+
+                # Check username matches
+                if row["username"] != uname:
+                    self.send_json({"ok": False, "error": "Anvandarnamnet matchar inte"}, 400)
+                    return
+
+                # Create user
+                user_count = db.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+                if user_count >= MAX_USERS:
+                    self.send_json({"ok": False, "error": "Max antal anvandare uppnatt"}, 403)
+                    return
+
+                token = uuid.uuid4().hex
+                try:
+                    db.execute(
+                        "INSERT INTO users (username, token, email, created_at) VALUES (?, ?, ?, ?)",
+                        (uname, token, email, now())
+                    )
+                except sqlite3.IntegrityError:
+                    self.send_json({"ok": False, "error": "Namnet eller e-postadressen ar redan tagen"}, 409)
+                    return
+
+                # Clean up pending code
+                db.execute("DELETE FROM pending_codes WHERE email = ?", (email,))
+                db.commit()
+            finally:
+                db.close()
+
+            self.send_json({"ok": True, "username": uname, "token": token})
+            return
+
+        # API: login with username + email
+        if path == "/api/login":
+            uname = body.get("username", "").strip()[:20]
+            email = body.get("email", "").strip().lower()[:254]
+            if not uname or not email:
+                self.send_json({"ok": False, "error": "Fyll i alla falt"}, 400)
+                return
+            db = get_db()
+            try:
+                row = db.execute(
+                    "SELECT username, token FROM users WHERE username = ? AND email = ?",
+                    (uname, email)
+                ).fetchone()
+            finally:
+                db.close()
+            if row:
+                self.send_json({"ok": True, "username": row["username"], "token": row["token"]})
+            else:
+                time.sleep(0.5)  # slow down brute force
+                self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller e-post"}, 401)
             return
 
         # API: verify token
@@ -3250,6 +3515,8 @@ if __name__ == "__main__":
         sys.stderr.write("WARNING: CORS_ORIGIN is '*' — set to your domain in production.\n")
     if DB_PATH.startswith("/tmp") or DB_PATH.startswith("\\tmp"):
         sys.stderr.write(f"WARNING: DB_PATH is '{DB_PATH}' — data will be lost on restart in ephemeral environments.\n")
+    if not SMTP_USER:
+        sys.stderr.write("WARNING: SMTP_USER not set — email verification disabled, direct registration allowed\n")
 
     init_db()
     load_caches()
