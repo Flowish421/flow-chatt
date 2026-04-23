@@ -1328,7 +1328,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
                     return
                 rows = db.execute("SELECT id, name, display_name, color, position, created_at FROM group_roles WHERE group_id = ? ORDER BY position DESC", (group_id,)).fetchall()
-                roles = [dict(r) for r in rows]
+                roles = []
+                for r in rows:
+                    rd = dict(r)
+                    members = db.execute("SELECT username FROM user_roles WHERE group_id = ? AND role_id = ?", (group_id, rd["id"])).fetchall()
+                    rd["members"] = [m["username"] for m in members]
+                    roles.append(rd)
             finally:
                 db.close()
             self.send_json({"ok": True, "roles": roles})
@@ -3143,7 +3148,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "gruppen finns inte"}, 404)
                     return
                 rows = db.execute("SELECT id, name, display_name, color, position, created_at FROM group_roles WHERE group_id = ? ORDER BY position DESC", (group_id,)).fetchall()
-                roles = [dict(r) for r in rows]
+                roles = []
+                for r in rows:
+                    rd = dict(r)
+                    members = db.execute("SELECT username FROM user_roles WHERE group_id = ? AND role_id = ?", (group_id, rd["id"])).fetchall()
+                    rd["members"] = [m["username"] for m in members]
+                    roles.append(rd)
             finally:
                 db.close()
             self.send_json({"ok": True, "roles": roles})
