@@ -1,5 +1,5 @@
 """
-Cortex Chat — Lightweight real-time chat server.
+Quiver — Lightweight real-time chat server.
 Python 3.10+, zero external dependencies (stdlib only).
 Deploy anywhere: Render, Railway, Fly.io, or localhost.
 """
@@ -67,11 +67,11 @@ def verify_password(stored, password):
     salt, hashed = stored.split(":", 1)
     return hashlib.sha256((salt + password).encode()).hexdigest() == hashed
 
-WELCOME_TEXT = """Valkomstguide till Flow Chatt
+WELCOME_TEXT = """Valkomstguide till Quiver
 ---
 
-1. Vad ar Flow Chatt?
-Flow Chatt ar en chattapp i Discord-stil dar du kan skapa grupper, text- och voice-kanaler, bjuda in vanner och chatta i realtid.
+1. Vad ar Quiver?
+Quiver ar en chattapp i Discord-stil dar du kan skapa grupper, text- och voice-kanaler, bjuda in vanner och chatta i realtid.
 
 ---
 
@@ -571,10 +571,10 @@ def init_db():
     # Seed the system room "allmant" (Guide channel, read-only instructions)
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at)
-        VALUES ('allmant', 'Guide', 'Hur man anvander Flow Chatt', 'system', 'system', 'system', ?)
+        VALUES ('allmant', 'Guide', 'Hur man anvander Quiver', 'system', 'system', 'system', ?)
     """, (now(),))
     # Update display_name if it was previously 'Allmant' (migration for existing DBs)
-    conn.execute("UPDATE channels SET display_name = 'Guide', topic = 'Hur man anvander Flow Chatt' WHERE name = 'allmant' AND display_name = 'Allmant'")
+    conn.execute("UPDATE channels SET display_name = 'Guide', topic = 'Hur man anvander Quiver' WHERE name = 'allmant' AND display_name = 'Allmant'")
     # Seed welcome message in allmant if empty
     existing = conn.execute("SELECT id FROM messages WHERE channel = 'allmant' LIMIT 1").fetchone()
     if not existing:
@@ -640,7 +640,7 @@ def send_verification_email(to_email, code):
         return False
     try:
         html = f"""<div style="font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:40px;border-radius:12px;max-width:400px;margin:0 auto">
-            <h2 style="color:#4f8ff7;margin:0 0 20px">Flow Chatt</h2>
+            <h2 style="color:#4f8ff7;margin:0 0 20px">Quiver</h2>
             <p>Din verifieringskod:</p>
             <div style="background:#16213e;padding:20px;border-radius:8px;text-align:center;font-size:32px;letter-spacing:8px;color:#34d399;font-weight:bold;margin:20px 0">{code}</div>
             <p style="color:#888;font-size:12px">Koden gar ut om 10 minuter. Om du inte begarde detta kan du ignorera mailet.</p>
@@ -648,7 +648,7 @@ def send_verification_email(to_email, code):
         payload = json.dumps({
             "from": EMAIL_FROM,
             "to": [to_email],
-            "subject": "Flow Chatt - Verifieringskod",
+            "subject": "Quiver - Verifieringskod",
             "html": html,
         }).encode()
         req = urllib.request.Request(
@@ -1090,7 +1090,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         # Favicon — inline SVG chat bubble to avoid 404 spam
         if path == "/favicon.ico":
-            svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#5865F2"/><path d="M16 18h32a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H28l-8 8v-8h-4a4 4 0 0 1-4-4V22a4 4 0 0 1 4-4z" fill="#fff"/></svg>'
+            svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="#58a6ff"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-size="60" font-weight="700" fill="#0d1117">Q</text></svg>'
             self.send_response(200)
             self.send_header("Content-Type", "image/svg+xml")
             self.send_header("Content-Length", len(svg))
@@ -3820,7 +3820,7 @@ if __name__ == "__main__":
     except (OSError, ValueError):
         pass  # SIGTERM not available on some platforms (e.g. Windows services)
 
-    print(f"Cortex Chat running on http://{HOST}:{PORT}")
+    print(f"Quiver running on http://{HOST}:{PORT}")
     print(f"Share with friends: open the URL above")
     try:
         server.serve_forever()
