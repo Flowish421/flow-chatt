@@ -20,6 +20,8 @@ import signal
 import sys
 import gzip
 import secrets
+import copy
+import random
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -156,6 +158,101 @@ def load_caches():
             group_visibility_cache.update(gvcache)
     finally:
         db.close()
+
+
+# --- Game state (in-memory, Among Us-style social deduction) ---
+active_games = {}  # group_id -> game_state
+game_lock = threading.Lock()
+
+TASK_NAMES = [
+    "Koppla kablar", "Ladda batteri", "Skanna kort", "Tomma sopor",
+    "Fixa ledningar", "Kalibrera motor", "Rensa ventilation", "Ladda ner data",
+    "Inspektera prover", "Mata in kod", "Justera teleskop", "Reparera skrov"
+]
+
+
+def sanitize_game(game, for_user):
+    """Return game state visible to a specific player."""
+    g = copy.deepcopy(game)
+    player = g['players'].get(for_user)
+    phase = g['phase']
+
+    if phase in ('lobby', 'ended'):
+        return g
+
+    my_role = player['role'] if player else None
+    am_alive = player['alive'] if player else False
+
+    for uname, p in g['players'].items():
+        if uname == for_user:
+            continue
+        if am_alive:
+            # Hide roles during active phases (unless impostor seeing other impostors)
+            if my_role == 'impostor' and p['role'] == 'impostor':
+                pass  # impostors can see each other
+            else:
+                p['role'] = 'unknown'
+        # Dead players (spectators) can see everything — no hiding
+
+    return g
+
+
+def broadcast_game(game):
+    """Send personalized game state to each player."""
+    group_id = game['group_id']
+    for uname in game['players']:
+        sanitized = sanitize_game(game, uname)
+        send_to_user(uname, {"event_type": "game_update", "group_id": group_id, "game": sanitized})
+
+
+def check_game_win(game):
+    """Check win conditions. Returns 'crew', 'impostor', or None."""
+    alive_crew = 0
+    alive_impostors = 0
+    all_tasks_done = True
+    for p in game['players'].values():
+        if not p['alive']:
+            continue
+        if p['role'] == 'impostor':
+            alive_impostors += 1
+        else:
+            alive_crew += 1
+            if p['tasks_done'] < p['tasks_total']:
+                all_tasks_done = False
+
+    if alive_impostors == 0:
+        return 'crew'
+    if alive_impostors >= alive_crew:
+        return 'impostor'
+    if all_tasks_done and alive_crew > 0:
+        return 'crew'
+    return None
+
+
+def resolve_votes(game):
+    """Resolve voting phase. Returns (ejected_username or None, result_text)."""
+    vote_counts = {}
+    for voter, target in game['votes'].items():
+        # Only count votes from alive players
+        if game['players'].get(voter, {}).get('alive', False):
+            vote_counts[target] = vote_counts.get(target, 0) + 1
+
+    if not vote_counts:
+        return None, "Ingen rostade."
+
+    max_votes = max(vote_counts.values())
+    top = [t for t, c in vote_counts.items() if c == max_votes]
+
+    if len(top) > 1 or top[0] == 'skip':
+        return None, "Lika roster — ingen kastas ut."
+
+    ejected = top[0]
+    if ejected in game['players']:
+        game['players'][ejected]['alive'] = False
+        role = game['players'][ejected]['role']
+        return ejected, f"{ejected} kastades ut. De var {role}."
+
+    return None, "Ogiltigt resultat."
 
 
 def cache_add_member(room, username):
@@ -1601,6 +1698,31 @@ class ChatHandler(BaseHTTPRequestHandler):
             for u in users:
                 u["online"] = u["username"] in online_names
             self.send_json({"ok": True, "users": users})
+            return
+
+        # API: get game state — GET /api/group/{id}/game
+        if re.match(r'^/api/group/[a-f0-9]+/game$', path):
+            group_id = path.split("/")[3]
+            qs = parse_qs(parsed.query)
+            req_user = qs.get("user", [""])[0].strip()[:20]
+            req_token = qs.get("token", [""])[0].strip()
+            if not req_user or not req_token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+            finally:
+                db.close()
+            if not valid:
+                self.send_json({"ok": False, "error": "invalid token"}, 401)
+                return
+            with game_lock:
+                game = active_games.get(group_id)
+            if not game:
+                self.send_json({"ok": False, "error": "inget aktivt spel"}, 404)
+                return
+            self.send_json({"ok": True, "game": sanitize_game(game, req_user)})
             return
 
         self.send_error(404)
@@ -3755,6 +3877,330 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             self.send_json({"ok": True})
+            return
+
+        # ===== GAME ENDPOINTS (Among Us-style social deduction) =====
+
+        # API: create game — POST /api/group/{id}/game/create
+        if re.match(r'^/api/group/[a-f0-9]+/game/create$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                if not is_group_member(group_id, author):
+                    self.send_json({"ok": False, "error": "du maste vara medlem i gruppen"}, 403)
+                    return
+            finally:
+                db.close()
+            with game_lock:
+                if group_id in active_games and active_games[group_id]['phase'] != 'ended':
+                    self.send_json({"ok": False, "error": "ett spel pagar redan i denna grupp"}, 409)
+                    return
+                game_id = uuid.uuid4().hex[:8]
+                game = {
+                    'id': game_id,
+                    'group_id': group_id,
+                    'host': author,
+                    'players': {
+                        author: {'role': None, 'alive': True, 'tasks_done': 0, 'tasks_total': 0, 'emergency_used': False}
+                    },
+                    'phase': 'lobby',
+                    'votes': {},
+                    'round': 0,
+                    'kill_cooldown': {},
+                    'winner': None,
+                    'dead_bodies': [],
+                    'created_at': time.time()
+                }
+                active_games[group_id] = game
+            broadcast_game(game)
+            self.send_json({"ok": True, "game_id": game_id, "host": author})
+            return
+
+        # API: join game — POST /api/group/{id}/game/join
+        if re.match(r'^/api/group/[a-f0-9]+/game/join$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                if not is_group_member(group_id, author):
+                    self.send_json({"ok": False, "error": "du maste vara medlem i gruppen"}, 403)
+                    return
+            finally:
+                db.close()
+            with game_lock:
+                game = active_games.get(group_id)
+                if not game:
+                    self.send_json({"ok": False, "error": "inget spel hittat"}, 404)
+                    return
+                if game['phase'] != 'lobby':
+                    self.send_json({"ok": False, "error": "spelet har redan borjat"}, 400)
+                    return
+                if author in game['players']:
+                    self.send_json({"ok": False, "error": "du ar redan med"}, 400)
+                    return
+                if len(game['players']) >= 10:
+                    self.send_json({"ok": False, "error": "spelet ar fullt (max 10)"}, 400)
+                    return
+                game['players'][author] = {'role': None, 'alive': True, 'tasks_done': 0, 'tasks_total': 0, 'emergency_used': False}
+            broadcast_game(game)
+            self.send_json({"ok": True, "game_id": game['id']})
+            return
+
+        # API: start game — POST /api/group/{id}/game/start
+        if re.match(r'^/api/group/[a-f0-9]+/game/start$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+            finally:
+                db.close()
+            with game_lock:
+                game = active_games.get(group_id)
+                if not game:
+                    self.send_json({"ok": False, "error": "inget spel hittat"}, 404)
+                    return
+                if game['host'] != author:
+                    self.send_json({"ok": False, "error": "bara hosten kan starta"}, 403)
+                    return
+                if game['phase'] != 'lobby':
+                    self.send_json({"ok": False, "error": "spelet har redan borjat"}, 400)
+                    return
+                num_players = len(game['players'])
+                if num_players < 4:
+                    self.send_json({"ok": False, "error": f"minst 4 spelare kravs (nu: {num_players})"}, 400)
+                    return
+                # Assign roles
+                num_impostors = 2 if num_players >= 6 else 1
+                player_names = list(game['players'].keys())
+                random.shuffle(player_names)
+                impostors = set(player_names[:num_impostors])
+                for uname in player_names:
+                    p = game['players'][uname]
+                    if uname in impostors:
+                        p['role'] = 'impostor'
+                        p['tasks_done'] = 0
+                        p['tasks_total'] = 0
+                    else:
+                        p['role'] = 'crewmate'
+                        num_tasks = random.randint(3, 5)
+                        p['tasks_done'] = 0
+                        p['tasks_total'] = num_tasks
+                        p['task_list'] = random.sample(TASK_NAMES, min(num_tasks, len(TASK_NAMES)))
+                game['phase'] = 'tasks'
+                game['round'] = 1
+                game['dead_bodies'] = []
+            broadcast_game(game)
+            self.send_json({"ok": True, "phase": "tasks"})
+            return
+
+        # API: game action — POST /api/group/{id}/game/action
+        if re.match(r'^/api/group/[a-f0-9]+/game/action$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            action = body.get("action", "").strip()
+            target = body.get("target", "").strip()[:20]
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+            finally:
+                db.close()
+            with game_lock:
+                game = active_games.get(group_id)
+                if not game:
+                    self.send_json({"ok": False, "error": "inget spel hittat"}, 404)
+                    return
+                player = game['players'].get(author)
+                if not player:
+                    self.send_json({"ok": False, "error": "du ar inte med i spelet"}, 403)
+                    return
+                if not player['alive']:
+                    self.send_json({"ok": False, "error": "du ar dod"}, 400)
+                    return
+
+                if action == 'complete_task':
+                    if game['phase'] != 'tasks':
+                        self.send_json({"ok": False, "error": "inte uppgiftsfas"}, 400)
+                        return
+                    if player['role'] == 'impostor':
+                        self.send_json({"ok": False, "error": "impostors kan inte gora uppgifter"}, 400)
+                        return
+                    if player['tasks_done'] >= player['tasks_total']:
+                        self.send_json({"ok": False, "error": "alla uppgifter klara"}, 400)
+                        return
+                    player['tasks_done'] += 1
+                    # Check task win
+                    winner = check_game_win(game)
+                    if winner:
+                        game['phase'] = 'ended'
+                        game['winner'] = winner
+
+                elif action == 'kill':
+                    if game['phase'] != 'tasks':
+                        self.send_json({"ok": False, "error": "inte uppgiftsfas"}, 400)
+                        return
+                    if player['role'] != 'impostor':
+                        self.send_json({"ok": False, "error": "bara impostors kan doda"}, 403)
+                        return
+                    if not target or target not in game['players']:
+                        self.send_json({"ok": False, "error": "ogiltigt mal"}, 400)
+                        return
+                    target_player = game['players'][target]
+                    if not target_player['alive']:
+                        self.send_json({"ok": False, "error": "malet ar redan dott"}, 400)
+                        return
+                    if target_player['role'] == 'impostor':
+                        self.send_json({"ok": False, "error": "kan inte doda en annan impostor"}, 400)
+                        return
+                    # Check cooldown
+                    now = time.time()
+                    last_kill = game['kill_cooldown'].get(author, 0)
+                    if now - last_kill < 30:
+                        remaining = int(30 - (now - last_kill))
+                        self.send_json({"ok": False, "error": f"cooldown: {remaining}s kvar"}, 400)
+                        return
+                    target_player['alive'] = False
+                    game['kill_cooldown'][author] = now
+                    game['dead_bodies'].append(target)
+                    # Check win
+                    winner = check_game_win(game)
+                    if winner:
+                        game['phase'] = 'ended'
+                        game['winner'] = winner
+
+                elif action == 'report':
+                    if game['phase'] != 'tasks':
+                        self.send_json({"ok": False, "error": "inte uppgiftsfas"}, 400)
+                        return
+                    if not game['dead_bodies']:
+                        self.send_json({"ok": False, "error": "inga kroppar att rapportera"}, 400)
+                        return
+                    game['phase'] = 'discuss'
+                    game['votes'] = {}
+                    game['dead_bodies'] = []
+
+                elif action == 'emergency':
+                    if game['phase'] != 'tasks':
+                        self.send_json({"ok": False, "error": "inte uppgiftsfas"}, 400)
+                        return
+                    if player.get('emergency_used', False):
+                        self.send_json({"ok": False, "error": "du har redan anvant ditt nodmote"}, 400)
+                        return
+                    player['emergency_used'] = True
+                    game['phase'] = 'discuss'
+                    game['votes'] = {}
+                    game['dead_bodies'] = []
+
+                elif action == 'vote':
+                    if game['phase'] not in ('discuss', 'vote'):
+                        self.send_json({"ok": False, "error": "inte rostningsfas"}, 400)
+                        return
+                    game['phase'] = 'vote'
+                    if not target:
+                        target = 'skip'
+                    if target != 'skip' and target not in game['players']:
+                        self.send_json({"ok": False, "error": "ogiltigt mal"}, 400)
+                        return
+                    if target != 'skip' and not game['players'][target]['alive']:
+                        self.send_json({"ok": False, "error": "kan inte rosta pa dod spelare"}, 400)
+                        return
+                    game['votes'][author] = target
+                    # Check if all alive players have voted
+                    alive_players = [u for u, p in game['players'].items() if p['alive']]
+                    all_voted = all(u in game['votes'] for u in alive_players)
+                    if all_voted:
+                        ejected, result_text = resolve_votes(game)
+                        game['last_vote_result'] = result_text
+                        game['last_ejected'] = ejected
+                        # Check win after ejection
+                        winner = check_game_win(game)
+                        if winner:
+                            game['phase'] = 'ended'
+                            game['winner'] = winner
+                        else:
+                            game['phase'] = 'tasks'
+                            game['votes'] = {}
+                            game['round'] += 1
+                else:
+                    self.send_json({"ok": False, "error": f"okand aktion: {action}"}, 400)
+                    return
+
+            broadcast_game(game)
+            self.send_json({"ok": True, "phase": game['phase'], "winner": game.get('winner')})
+            return
+
+        # API: leave game — POST /api/group/{id}/game/leave
+        if re.match(r'^/api/group/[a-f0-9]+/game/leave$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+            finally:
+                db.close()
+            with game_lock:
+                game = active_games.get(group_id)
+                if not game:
+                    self.send_json({"ok": False, "error": "inget spel hittat"}, 404)
+                    return
+                if author not in game['players']:
+                    self.send_json({"ok": False, "error": "du ar inte med i spelet"}, 400)
+                    return
+                del game['players'][author]
+                if not game['players']:
+                    # No players left — end game
+                    del active_games[group_id]
+                    self.send_json({"ok": True, "ended": True})
+                    return
+                # Transfer host if needed
+                if game['host'] == author:
+                    game['host'] = next(iter(game['players']))
+                # If game is active, check win condition
+                if game['phase'] not in ('lobby', 'ended'):
+                    winner = check_game_win(game)
+                    if winner:
+                        game['phase'] = 'ended'
+                        game['winner'] = winner
+            broadcast_game(game)
+            self.send_json({"ok": True, "ended": game['phase'] == 'ended'})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)

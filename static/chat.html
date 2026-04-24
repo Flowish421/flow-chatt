@@ -516,7 +516,7 @@ body {
   .react-add-btn { opacity: 1 !important; }
 
   /* Modals */
-  #create-group-modal .modal-content, #create-channel-modal .modal-content, #settings-modal .modal-content, #group-settings-modal .modal-content, #channel-settings-modal .modal-content, #audio-settings .modal-content, #invite-modal .modal-content {
+  #create-group-modal .modal-content, #create-channel-modal .modal-content, #settings-modal .modal-content, #group-settings-modal .modal-content, #channel-settings-modal .modal-content, #audio-settings .modal-content, #invite-modal .modal-content, #game-modal .modal-content {
     width: 95% !important; max-width: 95% !important;
     max-height: 85vh; overflow-y: auto;
   }
@@ -625,6 +625,54 @@ body {
 #screen-share-container { transition: box-shadow 0.2s; }
 #screen-share-container:hover { box-shadow: 0 8px 40px rgba(88,166,255,0.15); }
 #screen-btn.active { color: var(--green) !important; border-color: var(--green) !important; background: rgba(63,185,80,0.1) !important; }
+
+/* Among Us Game */
+.game-player {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  border-radius: 8px; font-family: var(--font-mono); font-size: 13px;
+  transition: background 0.15s;
+}
+.game-player:hover { background: rgba(88,166,255,0.08); }
+.game-player.dead { opacity: 0.4; text-decoration: line-through; }
+.game-player .avatar-dot {
+  width: 36px; height: 36px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff;
+}
+.game-role-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600;
+  font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.game-role-impostor { background: var(--red); color: #fff; }
+.game-role-crewmate { background: var(--green); color: #000; }
+.game-role-unknown { background: var(--bg-elevated); color: var(--text-muted); }
+.game-btn {
+  padding: 10px 20px; border: none; border-radius: 8px; font-family: var(--font-mono);
+  font-weight: 600; font-size: 13px; cursor: pointer; transition: opacity 0.15s;
+}
+.game-btn:hover { opacity: 0.85; }
+.game-btn-red { background: var(--red); color: #fff; }
+.game-btn-green { background: var(--green); color: #000; }
+.game-btn-blue { background: var(--accent); color: #000; }
+.game-btn-gray { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
+.game-task {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-radius: 6px; border: 1px solid var(--border); margin-bottom: 6px;
+  font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.game-task:hover { border-color: var(--accent); background: rgba(88,166,255,0.05); }
+.game-task.done { opacity: 0.5; border-color: var(--green); cursor: default; }
+.game-task .task-check { width: 20px; height: 20px; border-radius: 4px; border: 2px solid var(--border); display: flex; align-items: center; justify-content: center; }
+.game-task.done .task-check { background: var(--green); border-color: var(--green); color: #000; }
+.game-progress { height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; margin: 8px 0; }
+.game-progress-fill { height: 100%; background: var(--green); border-radius: 3px; transition: width 0.5s ease; }
+.game-vote-btn {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: none; color: var(--text-secondary); font-family: var(--font-mono);
+  font-size: 11px; cursor: pointer; transition: all 0.15s;
+}
+.game-vote-btn:hover { border-color: var(--red); color: var(--red); }
+.game-vote-btn.voted { background: var(--red); color: #fff; border-color: var(--red); }
 </style>
 </head>
 <body>
@@ -846,6 +894,17 @@ body {
       <div id="inv-link-result" style="display:none;margin-top:8px;font-family:var(--font-mono);font-size:11px;word-break:break-all"></div>
     </div>
     <button onclick="closeModal('invite-modal')" style="margin-top:12px;width:100%;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:10px;cursor:pointer">Stang</button>
+  </div>
+</div>
+
+<!-- Among Us Game Modal -->
+<div id="game-modal" class="modal-backdrop" onclick="if(event.target===this)closeModal('game-modal')" style="z-index:450">
+  <div class="modal-content" style="width:500px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h2 style="font-family:var(--font-mono);font-size:16px;color:var(--red)">&#x1F680; Among Us</h2>
+      <button onclick="closeModal('game-modal')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px">&#x2715;</button>
+    </div>
+    <div id="game-content" style="flex:1;overflow-y:auto"></div>
   </div>
 </div>
 
@@ -1767,7 +1826,7 @@ function makeGroupSection(group) {
   const header = document.createElement('div');
   header.className = 'group-header';
   header.addEventListener('click', (e) => {
-    if (e.target.closest('.group-add-btn') || e.target.closest('.group-settings-btn') || e.target.closest('.group-invite-btn')) return;
+    if (e.target.closest('.group-add-btn') || e.target.closest('.group-settings-btn') || e.target.closest('.group-invite-btn') || e.target.closest('.group-game-btn')) return;
     toggleGroupCollapse(group.id);
   });
 
@@ -1784,6 +1843,14 @@ function makeGroupSection(group) {
   badge.className = 'group-badge';
   badge.textContent = group.member_count || 0;
   header.appendChild(badge);
+
+  // Game button (visible to all members)
+  const gameBtn = document.createElement('button');
+  gameBtn.className = 'group-settings-btn group-game-btn';
+  gameBtn.textContent = '\u{1F3AE}';
+  gameBtn.title = 'Spela Among Us';
+  gameBtn.addEventListener('click', (e) => { e.stopPropagation(); showGameModal(group.id); });
+  header.appendChild(gameBtn);
 
   // Gear icon for owner/admin
   if (group.user_role === 'owner' || group.user_role === 'admin') {
@@ -2534,6 +2601,13 @@ function handleEvent(d) {
     handleVoiceEvent(d);
     return;
   }
+  if (d.event_type === 'game_update' && d.group_id === currentGameGroup) {
+    currentGame = d.game;
+    if (document.getElementById('game-modal').classList.contains('open')) {
+      renderGame();
+    }
+    return;
+  }
   if (d.event_type !== 'chat_message') return;
   // Notification dot for messages in other channels
   if (d.channel !== currentChannel) {
@@ -2968,7 +3042,7 @@ document.addEventListener('keydown', (e) => {
     document.getElementById('lightbox').classList.remove('on');
     const picker = document.getElementById('emoji-picker');
     if (picker.classList.contains('on')) { picker.classList.remove('on'); emojiPickerMode = null; }
-    ['create-group-modal', 'create-channel-modal', 'group-settings-modal', 'channel-settings-modal', 'settings-modal', 'audio-settings', 'invite-modal'].forEach(id => {
+    ['create-group-modal', 'create-channel-modal', 'group-settings-modal', 'channel-settings-modal', 'settings-modal', 'audio-settings', 'invite-modal', 'game-modal'].forEach(id => {
       const el = document.getElementById(id);
       if (el && (el.classList.contains('open') || el.style.display === 'flex')) closeModal(id);
     });
@@ -3718,6 +3792,259 @@ async function generateAndCopyInviteLink() {
     }
   } catch(e) {}
 }
+
+// === Among Us Game ===
+let currentGame = null;
+let currentGameGroup = null;
+
+const PLAYER_COLORS = ['#c51111','#132ed1','#117f2d','#ed54ba','#ef7d0d','#f5f557','#3f474e','#d6e0f0','#6b2fbb','#71491e'];
+
+async function showGameModal(groupId) {
+  currentGameGroup = groupId;
+  openModal('game-modal');
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(groupId) + '/game?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
+    if (res.ok && res.game) {
+      currentGame = res.game;
+      renderGame();
+    } else {
+      renderGameLobby(null);
+    }
+  } catch(e) {
+    renderGameLobby(null);
+  }
+}
+
+function renderGameLobby(game) {
+  const el = document.getElementById('game-content');
+  if (!game) {
+    el.innerHTML = `
+      <div style="text-align:center;padding:40px 20px">
+        <div style="font-size:64px;margin-bottom:16px">\u{1F680}</div>
+        <div style="font-family:var(--font-mono);font-size:18px;color:var(--text-primary);margin-bottom:8px">Among Us</div>
+        <div style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);margin-bottom:24px">Starta ett spel med din grupp!<br>Minst 4 spelare kr\u00e4vs.</div>
+        <button class="game-btn game-btn-red" onclick="createGame()">Skapa spel</button>
+      </div>`;
+    return;
+  }
+  const players = Object.entries(game.players || {});
+  const isHost = game.host === username;
+  let html = `
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">LOBBY</div>
+      <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">${players.length}/10 spelare</div>
+    </div>
+    <div style="margin-bottom:16px">`;
+  players.forEach(([name, p], i) => {
+    const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
+    html += `<div class="game-player">
+      <div class="avatar-dot" style="background:${color}">${esc(name[0].toUpperCase())}</div>
+      <span style="color:var(--text-primary)">${esc(name)}</span>
+      ${name === game.host ? '<span style="font-size:10px;color:var(--amber);margin-left:auto">\u{1F451} HOST</span>' : ''}
+    </div>`;
+  });
+  html += '</div><div style="display:flex;gap:8px;justify-content:center">';
+  if (isHost) {
+    html += `<button class="game-btn game-btn-red" onclick="startGame()" ${players.length < 4 ? 'disabled style="opacity:0.5;cursor:not-allowed"' : ''}>Starta (${players.length}/4+)</button>`;
+  }
+  const inGame = game.players && game.players[username];
+  if (!inGame) {
+    html += `<button class="game-btn game-btn-green" onclick="joinGame()">G\u00e5 med</button>`;
+  } else {
+    html += `<button class="game-btn game-btn-gray" onclick="leaveGame()">L\u00e4mna</button>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderGame() {
+  if (!currentGame) return;
+  const phase = currentGame.phase;
+  if (phase === 'lobby') { renderGameLobby(currentGame); return; }
+  if (phase === 'ended') { renderGameEnded(); return; }
+
+  const me = currentGame.players[username];
+  const el = document.getElementById('game-content');
+  const players = Object.entries(currentGame.players || {});
+  const alivePlayers = players.filter(([n, p]) => p.alive);
+
+  let myRole = me ? me.role : 'spectator';
+  let roleLabel = myRole === 'impostor' ? '\u{1F52A} IMPOSTOR' : myRole === 'crewmate' ? '\u{1F477} CREWMATE' : '\u{1F47B} SPECTATOR';
+  let roleClass = myRole === 'impostor' ? 'game-role-impostor' : myRole === 'crewmate' ? 'game-role-crewmate' : 'game-role-unknown';
+  let phaseLabel = phase === 'tasks' ? '\u{1F4CB} UPPDRAG' : phase === 'discuss' ? '\u{1F4AC} DISKUSSION' : phase === 'vote' ? '\u{1F5F3}\uFE0F R\u00d6STAR' : phase;
+
+  let totalTasks = 0, doneTasks = 0;
+  players.forEach(([n, p]) => {
+    if (p.role === 'crewmate' || p.role === 'unknown') {
+      totalTasks += (p.tasks_total || 0);
+      doneTasks += (p.tasks_done || 0);
+    }
+  });
+  if (currentGame.total_tasks) { totalTasks = currentGame.total_tasks; doneTasks = currentGame.done_tasks || 0; }
+  const taskPct = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+
+  let html = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span class="game-role-badge ${roleClass}">${roleLabel}</span>
+      <span style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted)">${phaseLabel}</span>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-bottom:4px">Uppdrag: ${doneTasks}/${totalTasks}</div>
+    <div class="game-progress"><div class="game-progress-fill" style="width:${taskPct}%"></div></div>`;
+
+  if (phase === 'tasks' && me && me.alive) {
+    if (myRole === 'crewmate') {
+      html += '<div style="margin:12px 0;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Dina uppdrag</div>';
+      (me.tasks || []).forEach((task, i) => {
+        const done = i < me.tasks_done;
+        html += `<div class="game-task ${done ? 'done' : ''}" ${!done ? 'onclick="completeTask()"' : ''}>
+          <div class="task-check">${done ? '\u2713' : ''}</div>
+          <span>${esc(task)}</span>
+        </div>`;
+      });
+      html += `<div style="margin-top:12px;text-align:center">
+        <button class="game-btn game-btn-blue" onclick="emergencyMeeting()" ${me.used_emergency ? 'disabled style="opacity:0.4;cursor:not-allowed"' : ''}>\u{1F6A8} N\u00f6dm\u00f6te</button>
+      </div>`;
+    } else if (myRole === 'impostor') {
+      html += '<div style="margin:12px 0;font-family:var(--font-mono);font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:1px">\u{1F52A} V\u00e4lj offer</div>';
+      alivePlayers.forEach(([name, p]) => {
+        if (name === username) return;
+        if (p.role === 'impostor') return;
+        html += `<div class="game-player" style="cursor:pointer" onclick="killPlayer('${esc(name)}')">
+          <div class="avatar-dot" style="background:${PLAYER_COLORS[players.findIndex(([n]) => n === name) % PLAYER_COLORS.length]}">${esc(name[0].toUpperCase())}</div>
+          <span>${esc(name)}</span>
+          <span style="margin-left:auto;font-size:16px">\u{1F52A}</span>
+        </div>`;
+      });
+      html += `<div style="margin-top:12px;text-align:center">
+        <button class="game-btn game-btn-blue" onclick="reportBody()">\u{1F4E2} Rapportera kropp</button>
+      </div>`;
+    }
+  } else if (phase === 'discuss' || phase === 'vote') {
+    html += `<div style="margin:12px 0;font-family:var(--font-mono);font-size:11px;color:var(--amber);text-transform:uppercase;letter-spacing:1px">${phase === 'discuss' ? '\u{1F4AC} Diskutera i chatten! R\u00f6stning b\u00f6rjar snart...' : '\u{1F5F3}\uFE0F R\u00f6sta \u2014 vem \u00e4r impostorn?'}</div>`;
+
+    if (phase === 'vote' && me && me.alive) {
+      const myVote = currentGame.votes ? currentGame.votes[username] : null;
+      alivePlayers.forEach(([name, p]) => {
+        if (name === username) return;
+        const voted = myVote === name;
+        html += `<div class="game-player">
+          <div class="avatar-dot" style="background:${PLAYER_COLORS[players.findIndex(([n]) => n === name) % PLAYER_COLORS.length]}">${esc(name[0].toUpperCase())}</div>
+          <span>${esc(name)}</span>
+          <button class="game-vote-btn ${voted ? 'voted' : ''}" onclick="votePlayer('${esc(name)}')" style="margin-left:auto" ${myVote ? 'disabled' : ''}>${voted ? 'R\u00d6STAD' : 'R\u00f6sta'}</button>
+        </div>`;
+      });
+      html += `<div style="margin-top:8px;text-align:center">
+        <button class="game-vote-btn ${myVote === 'skip' ? 'voted' : ''}" onclick="votePlayer('skip')" ${myVote ? 'disabled' : ''} style="padding:8px 20px">${myVote === 'skip' ? '\u2713 Skippad' : 'Skippa r\u00f6st'}</button>
+      </div>`;
+    }
+  }
+
+  html += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;font-family:var(--font-mono);font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Spelare</div>';
+  players.forEach(([name, p], i) => {
+    const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
+    let roleTag = '';
+    if (p.role === 'impostor') roleTag = '<span class="game-role-badge game-role-impostor" style="margin-left:auto;font-size:9px">IMPOSTOR</span>';
+    else if (p.role === 'crewmate') roleTag = '<span class="game-role-badge game-role-crewmate" style="margin-left:auto;font-size:9px">CREW</span>';
+    else roleTag = '<span class="game-role-badge game-role-unknown" style="margin-left:auto;font-size:9px">?</span>';
+    html += `<div class="game-player ${p.alive ? '' : 'dead'}">
+      <div class="avatar-dot" style="background:${color};${p.alive ? '' : 'filter:grayscale(1)'}">${p.alive ? esc(name[0].toUpperCase()) : '\u{1F480}'}</div>
+      <span>${esc(name)}</span>
+      ${roleTag}
+    </div>`;
+  });
+
+  el.innerHTML = html;
+}
+
+function renderGameEnded() {
+  const el = document.getElementById('game-content');
+  const winner = currentGame.winner;
+  const isImpostorWin = winner === 'impostor';
+  const players = Object.entries(currentGame.players || {});
+
+  let html = `
+    <div style="text-align:center;padding:20px">
+      <div style="font-size:64px;margin-bottom:12px">${isImpostorWin ? '\u{1F52A}' : '\u{1F389}'}</div>
+      <div style="font-family:var(--font-mono);font-size:20px;color:${isImpostorWin ? 'var(--red)' : 'var(--green)'};margin-bottom:8px">${isImpostorWin ? 'IMPOSTOR VINNER!' : 'CREWMATES VINNER!'}</div>
+      <div style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);margin-bottom:20px">${currentGame.end_reason || ''}</div>
+    </div>
+    <div style="margin-bottom:16px">`;
+  players.forEach(([name, p], i) => {
+    const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
+    html += `<div class="game-player ${p.alive ? '' : 'dead'}">
+      <div class="avatar-dot" style="background:${color}">${esc(name[0].toUpperCase())}</div>
+      <span>${esc(name)}</span>
+      <span class="game-role-badge ${p.role === 'impostor' ? 'game-role-impostor' : 'game-role-crewmate'}" style="margin-left:auto;font-size:9px">${p.role === 'impostor' ? 'IMPOSTOR' : 'CREW'}</span>
+    </div>`;
+  });
+  html += `</div>
+    <div style="text-align:center">
+      <button class="game-btn game-btn-red" onclick="createGame()">Spela igen</button>
+      <button class="game-btn game-btn-gray" onclick="closeModal('game-modal')" style="margin-left:8px">St\u00e4ng</button>
+    </div>`;
+  el.innerHTML = html;
+}
+
+async function createGame() {
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(currentGameGroup) + '/game/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({author: username, token: userToken})
+    }).then(r => r.json());
+    if (res.ok) { currentGame = res.game; renderGame(); }
+    else alert(res.error || 'Fel');
+  } catch(e) { alert('Serverfel'); }
+}
+
+async function joinGame() {
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(currentGameGroup) + '/game/join', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({author: username, token: userToken})
+    }).then(r => r.json());
+    if (res.ok) { currentGame = res.game; renderGame(); }
+    else alert(res.error || 'Fel');
+  } catch(e) {}
+}
+
+async function startGame() {
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(currentGameGroup) + '/game/start', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({author: username, token: userToken})
+    }).then(r => r.json());
+    if (res.ok) { currentGame = res.game; renderGame(); }
+    else alert(res.error || 'Fel');
+  } catch(e) {}
+}
+
+async function leaveGame() {
+  try {
+    await fetch('/api/group/' + encodeURIComponent(currentGameGroup) + '/game/leave', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({author: username, token: userToken})
+    });
+    currentGame = null;
+    renderGameLobby(null);
+  } catch(e) {}
+}
+
+async function gameAction(action, target) {
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(currentGameGroup) + '/game/action', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({author: username, token: userToken, action, target})
+    }).then(r => r.json());
+    if (res.ok) { currentGame = res.game; renderGame(); }
+    else if (res.error) alert(res.error);
+  } catch(e) {}
+}
+
+function completeTask() { gameAction('complete_task'); }
+function killPlayer(target) { gameAction('kill', target); }
+function reportBody() { gameAction('report'); }
+function emergencyMeeting() { gameAction('emergency'); }
+function votePlayer(target) { gameAction('vote', target); }
 
 async function leaveCurrentGroup() {
   const groupId = document.getElementById('gs-group-id').value;
