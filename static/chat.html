@@ -663,7 +663,8 @@ body {
   <button id="new-channel-btn" onclick="showCreateGroupModal()">+ Skapa grupp</button>
   <div id="conn-info">
     <span class="dot">&#9679;</span>
-    <span class="user-name" id="user-display" title="Ditt nickname (last)"></span>
+    <span class="user-name" id="user-display" title="Ditt nickname"></span>
+    <button onclick="doLogout()" title="Logga ut" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;margin-left:auto;padding:2px 4px;line-height:1" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-muted)'">&#10140;</button>
   </div>
 </div>
 
@@ -1099,6 +1100,13 @@ function validateNick() {
       btn.disabled = false;
     }
   }, 400);
+}
+
+function doLogout() {
+  if (!confirm('Logga ut?')) return;
+  localStorage.removeItem('cortex-chat-user');
+  localStorage.removeItem('cortex-chat-token');
+  location.reload();
 }
 
 async function doRegister() {
