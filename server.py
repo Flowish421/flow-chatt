@@ -19,9 +19,8 @@ import socket
 import signal
 import sys
 import gzip
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.request
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
@@ -38,8 +37,8 @@ ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via environment variable
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "onboarding@resend.com")
 
 DISPOSABLE_DOMAINS = {
     "mailinator.com","guerrillamail.com","guerrillamail.de","tempmail.com","throwaway.email",
@@ -599,33 +598,37 @@ def is_disposable_email(email):
 
 
 def send_verification_email(to_email, code):
-    if not SMTP_USER or not SMTP_PASS:
-        print(f"SMTP not configured. Code for {to_email}: {code}", file=sys.stderr)
+    if not RESEND_API_KEY:
+        print(f"RESEND_API_KEY not configured. Code for {to_email}: {code}", file=sys.stderr)
         return False
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Flow Chatt - Verifieringskod"
-        msg["From"] = SMTP_USER
-        msg["To"] = to_email
-
-        text = f"Din verifieringskod for Flow Chatt: {code}\n\nKoden gar ut om 10 minuter."
         html = f"""<div style="font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:40px;border-radius:12px;max-width:400px;margin:0 auto">
             <h2 style="color:#4f8ff7;margin:0 0 20px">Flow Chatt</h2>
             <p>Din verifieringskod:</p>
             <div style="background:#16213e;padding:20px;border-radius:8px;text-align:center;font-size:32px;letter-spacing:8px;color:#34d399;font-weight:bold;margin:20px 0">{code}</div>
             <p style="color:#888;font-size:12px">Koden gar ut om 10 minuter. Om du inte begarde detta kan du ignorera mailet.</p>
         </div>"""
-
-        msg.attach(MIMEText(text, "plain"))
-        msg.attach(MIMEText(html, "html"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
+        payload = json.dumps({
+            "from": EMAIL_FROM,
+            "to": [to_email],
+            "subject": "Flow Chatt - Verifieringskod",
+            "html": html,
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+        print(f"Email sent to {to_email}: {result.get('id', 'ok')}", file=sys.stderr)
         return True
     except Exception as e:
-        print(f"Email send error: {e}", file=sys.stderr)
+        print(f"Resend email error: {e}", file=sys.stderr)
         return False
 
 
@@ -1634,7 +1637,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         # API: register username (fallback when SMTP not configured)
         if path == "/api/register":
-            if SMTP_USER:
+            if RESEND_API_KEY:
                 self.send_json({"ok": False, "error": "use /api/register/send-code"}, 400)
                 return
             uname = body.get("username", "").strip()[:20]
@@ -3515,8 +3518,8 @@ if __name__ == "__main__":
         sys.stderr.write("WARNING: CORS_ORIGIN is '*' — set to your domain in production.\n")
     if DB_PATH.startswith("/tmp") or DB_PATH.startswith("\\tmp"):
         sys.stderr.write(f"WARNING: DB_PATH is '{DB_PATH}' — data will be lost on restart in ephemeral environments.\n")
-    if not SMTP_USER:
-        sys.stderr.write("WARNING: SMTP_USER not set — email verification disabled, direct registration allowed\n")
+    if not RESEND_API_KEY:
+        sys.stderr.write("WARNING: RESEND_API_KEY not set — email verification disabled, direct registration allowed\n")
 
     init_db()
     load_caches()
