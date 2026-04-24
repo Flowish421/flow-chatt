@@ -10,19 +10,22 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
-  --bg-deep: #0a0c10;
-  --bg-surface: #12151a;
-  --bg-elevated: #1a1e26;
-  --border: #252a35;
-  --accent: #4f8ff7;
-  --green: #34d399;
-  --red: #f87171;
-  --amber: #fbbf24;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #505a6e;
+  --bg-deep: #0d1117;
+  --bg-surface: #161b22;
+  --bg-elevated: #21262d;
+  --border: #30363d;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --amber: #d29922;
+  --purple: #bc8cff;
+  --pink: #f778ba;
+  --text-primary: #f0f6fc;
+  --text-secondary: #c9d1d9;
+  --text-muted: #8b949e;
   --font-ui: "DM Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "DM Sans", "Segoe UI", sans-serif;
 }
 body {
   background: var(--bg-deep);
@@ -49,8 +52,8 @@ body {
   font-family: var(--font-mono); font-size: 13px;
   color: var(--text-secondary); cursor: pointer; border-radius: 4px; margin-bottom: 2px;
 }
-.ch-row:hover { background: var(--bg-elevated); }
-.ch-row.active { background: var(--bg-elevated); color: var(--accent); border-left: 2px solid var(--accent); }
+.ch-row:hover { background: rgba(88,166,255,0.08); }
+.ch-row.active { background: rgba(88,166,255,0.15); color: var(--accent); border-left: 2px solid var(--accent); font-weight: 600; }
 .ch-row .hash { color: var(--text-muted); margin-right: 4px; }
 .ch-row .ch-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ch-row .ch-del { display: none; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 11px; padding: 2px 4px; border-radius: 3px; }
@@ -59,11 +62,11 @@ body {
 
 .group-header {
   display: flex; align-items: center; padding: 8px 10px;
-  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
-  color: var(--text-secondary); cursor: pointer; border-radius: 6px;
-  margin-top: 10px; gap: 6px;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  color: var(--text-primary); cursor: pointer; border-radius: 6px;
+  margin-top: 10px; gap: 6px; text-transform: uppercase; letter-spacing: 0.5px;
 }
-.group-header:hover { background: var(--bg-elevated); }
+.group-header:hover { background: rgba(88,166,255,0.08); }
 .group-arrow { font-size: 8px; transition: transform 0.2s; color: var(--text-muted); }
 .group-arrow.collapsed { transform: rotate(-90deg); }
 .group-channels { padding-left: 6px; overflow: hidden; max-height: 500px; transition: max-height 0.3s ease, opacity 0.25s ease; opacity: 1; }
@@ -150,7 +153,9 @@ body {
 }
 .msg:hover { background: var(--bg-surface); }
 .msg .time { color: var(--text-muted); font-size: 11px; margin-right: 8px; }
-.msg .author { font-weight: 500; margin-right: 8px; }
+.msg .author { font-weight: 600; margin-right: 8px; }
+.msg .msg-avatar { transition: transform 0.1s; }
+.msg .msg-avatar:hover { transform: scale(1.1); }
 .msg.role-user .author { color: var(--accent); }
 .msg.role-self .author { color: var(--green); }
 .msg.role-system .author { color: var(--amber); }
@@ -606,7 +611,7 @@ body {
 
 /* Enhanced hover transitions for sidebar items */
 .ch-row { transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
-.ch-row.active { background: var(--bg-elevated); color: var(--accent); border-left: 2px solid var(--accent); }
+.ch-row.active { background: rgba(88,166,255,0.15); color: var(--accent); border-left: 2px solid var(--accent); font-weight: 600; }
 .group-header { transition: background 0.15s ease; }
 .group-arrow { transition: transform 0.25s ease; }
 .discover-row { transition: background 0.15s ease; }
@@ -670,8 +675,8 @@ body {
   <div class="channel-list" id="channel-list" role="list"></div>
   <button id="new-channel-btn" onclick="showCreateGroupModal()">+ Skapa grupp</button>
   <div id="conn-info">
-    <span class="dot">&#9679;</span>
-    <span class="user-name" id="user-display"></span>
+    <span id="sidebar-avatar" onclick="showEditProfile()" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;cursor:pointer;flex-shrink:0;font-family:var(--font-mono);background:#4f8ff7" title="Redigera profil">F</span>
+    <span class="user-name" id="user-display" onclick="showEditProfile()" style="cursor:pointer" title="Redigera profil"></span>
     <button id="logout-btn" onclick="doLogout()">Logga ut</button>
   </div>
 </div>
@@ -906,6 +911,42 @@ body {
   </div>
 </div>
 
+<!-- Profile Modal -->
+<div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:400;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--bg-surface);border-radius:16px;width:340px;max-width:90%;overflow:hidden;border:1px solid var(--border)">
+    <div id="profile-banner" style="height:80px;background:#1a1e26"></div>
+    <div style="padding:0 20px;margin-top:-32px">
+      <div id="profile-avatar" style="width:64px;height:64px;border-radius:50%;background:#4f8ff7;border:4px solid var(--bg-surface);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;font-family:var(--font-mono)">F</div>
+    </div>
+    <div style="padding:12px 20px 20px">
+      <div id="profile-name" style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--text-primary)">Username</div>
+      <div id="profile-roles" style="display:flex;gap:4px;flex-wrap:wrap;margin:6px 0"></div>
+      <div id="profile-bio" style="font-family:var(--font-mono);font-size:12px;color:var(--text-secondary);margin:10px 0;padding:10px;background:var(--bg-elevated);border-radius:8px;min-height:40px">Ingen bio annu</div>
+      <div id="profile-joined" style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)">Medlem sedan ...</div>
+      <button onclick="document.getElementById('profile-modal').style.display='none'" style="width:100%;margin-top:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:8px;cursor:pointer">Stang</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Profile Modal -->
+<div id="edit-profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:450;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--bg-surface);border-radius:16px;width:380px;max-width:90%;overflow:hidden;border:1px solid var(--border);padding:24px">
+    <h2 style="font-family:var(--font-mono);font-size:14px;color:var(--accent);margin-bottom:16px">Redigera profil</h2>
+    <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px">Bio</label>
+    <textarea id="ep-bio" maxlength="200" rows="3" placeholder="Skriv nagot om dig..." style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:10px;outline:none;resize:vertical;margin-bottom:4px;box-sizing:border-box"></textarea>
+    <div id="ep-bio-count" style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);text-align:right;margin-bottom:12px">0/200</div>
+    <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Avatar-farg</label>
+    <div id="ep-avatar-colors" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div>
+    <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Banner-farg</label>
+    <div id="ep-banner-colors" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div>
+    <div id="ep-error" style="font-family:var(--font-mono);font-size:11px;color:var(--red);min-height:16px;margin-bottom:8px"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="saveProfile()" style="flex:1;background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:10px;cursor:pointer">Spara</button>
+      <button onclick="document.getElementById('edit-profile-modal').style.display='none'" style="flex:1;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:10px;cursor:pointer">Avbryt</button>
+    </div>
+  </div>
+</div>
+
 <audio id="ringtone" loop preload="none"><source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" type="audio/wav"></audio>
 
 <script>
@@ -954,6 +995,146 @@ function usernameColor(name) {
     hash = hash & hash;
   }
   return USERNAME_COLORS[Math.abs(hash) % USERNAME_COLORS.length];
+}
+
+// === Profile system ===
+let _profileCache = {}; // username -> {bio, avatar_color, banner_color, created_at}
+let _myAvatarColor = localStorage.getItem('flow-avatar-color') || '#4f8ff7';
+let _myBannerColor = localStorage.getItem('flow-banner-color') || '#1a1e26';
+let _avatarColorCache = {}; // username -> avatar_color (from messages/groups)
+
+const AVATAR_COLORS = ['#4f8ff7','#3fb950','#f85149','#d29922','#bc8cff','#f778ba','#58a6ff','#e3b341','#56d364','#ff7b72'];
+const BANNER_COLORS = ['#1a1e26','#0d1117','#161b22','#1c2333','#1b2735','#1a1a2e','#16213e','#0f3460','#2d1b69','#3b1f2b'];
+
+async function showProfile(targetUser) {
+  const modal = document.getElementById('profile-modal');
+  modal.style.display = 'flex';
+  // Set defaults while loading
+  document.getElementById('profile-name').textContent = targetUser;
+  document.getElementById('profile-avatar').textContent = targetUser[0].toUpperCase();
+  document.getElementById('profile-avatar').style.background = _avatarColorCache[targetUser] || usernameColor(targetUser);
+  document.getElementById('profile-banner').style.background = '#1a1e26';
+  document.getElementById('profile-bio').textContent = 'Laddar...';
+  document.getElementById('profile-joined').textContent = '';
+  document.getElementById('profile-roles').innerHTML = '';
+  try {
+    const res = await fetch('/api/profile/' + encodeURIComponent(targetUser)).then(r => r.json());
+    if (res.ok) {
+      _profileCache[targetUser] = res;
+      document.getElementById('profile-avatar').style.background = res.avatar_color || '#4f8ff7';
+      document.getElementById('profile-banner').style.background = res.banner_color || '#1a1e26';
+      document.getElementById('profile-bio').textContent = res.bio || 'Ingen bio annu';
+      if (res.created_at) {
+        const d = new Date(res.created_at);
+        document.getElementById('profile-joined').textContent = 'Medlem sedan ' + d.toLocaleDateString('sv-SE', { year: 'numeric', month: 'long', day: 'numeric' });
+      }
+      // Show role badges if in current group
+      if (currentGroup) {
+        const roles = _memberRolesCache[currentGroup];
+        if (roles && roles[targetUser]) {
+          const rolesDiv = document.getElementById('profile-roles');
+          roles[targetUser].forEach(r => {
+            const badge = document.createElement('span');
+            badge.className = 'custom-role-badge';
+            badge.innerHTML = '<span class="role-dot" style="background:' + (r.color || '#99aab5') + '"></span>' + esc(r.display_name || r.name);
+            rolesDiv.appendChild(badge);
+          });
+        }
+      }
+    }
+  } catch(e) {
+    document.getElementById('profile-bio').textContent = 'Kunde inte ladda profil';
+  }
+}
+
+function showEditProfile() {
+  const modal = document.getElementById('edit-profile-modal');
+  modal.style.display = 'flex';
+  // Bio
+  const bioEl = document.getElementById('ep-bio');
+  const cached = _profileCache[username];
+  bioEl.value = cached ? cached.bio || '' : '';
+  document.getElementById('ep-bio-count').textContent = bioEl.value.length + '/200';
+  bioEl.oninput = () => { document.getElementById('ep-bio-count').textContent = bioEl.value.length + '/200'; };
+  // Avatar colors
+  const avatarDiv = document.getElementById('ep-avatar-colors');
+  avatarDiv.innerHTML = '';
+  const currentAvatar = (cached && cached.avatar_color) || _myAvatarColor;
+  AVATAR_COLORS.forEach(c => {
+    const swatch = document.createElement('div');
+    swatch.style.cssText = 'width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid ' + (c === currentAvatar ? 'var(--text-primary)' : 'transparent') + ';transition:border-color 0.15s';
+    swatch.style.background = c;
+    swatch.dataset.color = c;
+    swatch.onclick = () => {
+      avatarDiv.querySelectorAll('div').forEach(d => d.style.borderColor = 'transparent');
+      swatch.style.borderColor = 'var(--text-primary)';
+    };
+    avatarDiv.appendChild(swatch);
+  });
+  // Banner colors
+  const bannerDiv = document.getElementById('ep-banner-colors');
+  bannerDiv.innerHTML = '';
+  const currentBanner = (cached && cached.banner_color) || _myBannerColor;
+  BANNER_COLORS.forEach(c => {
+    const swatch = document.createElement('div');
+    swatch.style.cssText = 'width:32px;height:32px;border-radius:6px;cursor:pointer;border:3px solid ' + (c === currentBanner ? 'var(--text-primary)' : 'transparent') + ';transition:border-color 0.15s';
+    swatch.style.background = c;
+    swatch.dataset.color = c;
+    swatch.onclick = () => {
+      bannerDiv.querySelectorAll('div').forEach(d => d.style.borderColor = 'transparent');
+      swatch.style.borderColor = 'var(--text-primary)';
+    };
+    bannerDiv.appendChild(swatch);
+  });
+  document.getElementById('ep-error').textContent = '';
+  // Load current profile
+  if (!cached) {
+    fetch('/api/profile/' + encodeURIComponent(username)).then(r => r.json()).then(res => {
+      if (res.ok) {
+        _profileCache[username] = res;
+        bioEl.value = res.bio || '';
+        document.getElementById('ep-bio-count').textContent = bioEl.value.length + '/200';
+        _myAvatarColor = res.avatar_color || '#4f8ff7';
+        _myBannerColor = res.banner_color || '#1a1e26';
+        // Re-select correct swatches
+        avatarDiv.querySelectorAll('div').forEach(d => d.style.borderColor = d.dataset.color === _myAvatarColor ? 'var(--text-primary)' : 'transparent');
+        bannerDiv.querySelectorAll('div').forEach(d => d.style.borderColor = d.dataset.color === _myBannerColor ? 'var(--text-primary)' : 'transparent');
+      }
+    });
+  }
+}
+
+async function saveProfile() {
+  const bio = document.getElementById('ep-bio').value.trim().substring(0, 200);
+  const avatarDiv = document.getElementById('ep-avatar-colors');
+  const bannerDiv = document.getElementById('ep-banner-colors');
+  const selectedAvatar = avatarDiv.querySelector('div[style*="var(--text-primary)"]');
+  const selectedBanner = bannerDiv.querySelector('div[style*="var(--text-primary)"]');
+  const avatarColor = selectedAvatar ? selectedAvatar.dataset.color : _myAvatarColor;
+  const bannerColor = selectedBanner ? selectedBanner.dataset.color : _myBannerColor;
+  try {
+    const res = await fetch('/api/profile/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, token: userToken, bio, avatar_color: avatarColor, banner_color: bannerColor }),
+    }).then(r => r.json());
+    if (res.ok) {
+      _myAvatarColor = avatarColor;
+      _myBannerColor = bannerColor;
+      localStorage.setItem('flow-avatar-color', avatarColor);
+      localStorage.setItem('flow-banner-color', bannerColor);
+      _profileCache[username] = { ..._profileCache[username], bio, avatar_color: avatarColor, banner_color: bannerColor };
+      _avatarColorCache[username] = avatarColor;
+      // Update sidebar avatar
+      const sidebarAvatar = document.getElementById('sidebar-avatar');
+      sidebarAvatar.style.background = avatarColor;
+      document.getElementById('edit-profile-modal').style.display = 'none';
+    } else {
+      document.getElementById('ep-error').textContent = res.error || 'Kunde inte spara';
+    }
+  } catch(e) {
+    document.getElementById('ep-error').textContent = 'Serverfel';
+  }
 }
 
 // === Modal open/close helpers ===
@@ -1271,6 +1452,22 @@ async function doChangePassword() {
 
 async function startChat() {
   document.getElementById('user-display').textContent = username;
+  // Set sidebar avatar initial
+  const sidebarAvatar = document.getElementById('sidebar-avatar');
+  sidebarAvatar.textContent = username[0].toUpperCase();
+  sidebarAvatar.style.background = _myAvatarColor;
+  // Fetch own profile for sidebar avatar color
+  fetch('/api/profile/' + encodeURIComponent(username)).then(r => r.json()).then(res => {
+    if (res.ok) {
+      _profileCache[username] = res;
+      _myAvatarColor = res.avatar_color || '#4f8ff7';
+      _myBannerColor = res.banner_color || '#1a1e26';
+      _avatarColorCache[username] = _myAvatarColor;
+      localStorage.setItem('flow-avatar-color', _myAvatarColor);
+      localStorage.setItem('flow-banner-color', _myBannerColor);
+      sidebarAvatar.style.background = _myAvatarColor;
+    }
+  }).catch(() => {});
 
   const params = new URLSearchParams(location.search);
   const urlGroup = params.get('group');
@@ -1324,6 +1521,10 @@ async function loadChannels() {
 
     channelData = [...systemChannels];
     groups.forEach(g => {
+      // Cache member avatar colors from group data
+      if (g.member_colors) {
+        Object.assign(_avatarColorCache, g.member_colors);
+      }
       (g.channels || []).forEach(ch => {
         ch._group = g;
         channelData.push(ch);
@@ -1625,11 +1826,18 @@ function makeVoiceRow(c) {
     mRow.className = 'voice-member-row' + (m === username ? ' is-self' : '');
     const avatar = document.createElement('span');
     avatar.className = 'voice-avatar';
-    avatar.style.background = usernameColor(m);
+    // Use avatar_color from group member_colors or cache
+    const memberColor = (c._group && c._group.member_colors && c._group.member_colors[m]) || _avatarColorCache[m] || usernameColor(m);
+    avatar.style.background = memberColor;
+    avatar.style.color = '#fff';
     avatar.textContent = m.charAt(0).toUpperCase();
+    avatar.style.cursor = 'pointer';
+    avatar.addEventListener('click', (e) => { e.stopPropagation(); showProfile(m); });
     mRow.appendChild(avatar);
     const nameSpan = document.createElement('span');
     nameSpan.textContent = m;
+    nameSpan.style.cursor = 'pointer';
+    nameSpan.addEventListener('click', (e) => { e.stopPropagation(); showProfile(m); });
     mRow.appendChild(nameSpan);
     wrap.appendChild(mRow);
   });
@@ -1790,7 +1998,8 @@ async function loadMessages(channel) {
       msgs.forEach(m => {
         seenIds.add(m.id);
         addDateSeparator(m.created_at);
-        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || [], m.id, m.reactions || []);
+        if (m.avatar_color) _avatarColorCache[m.author] = m.avatar_color;
+        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || [], m.id, m.reactions || [], 0, m.avatar_color);
       });
     }
   } catch(e) {
@@ -1814,7 +2023,7 @@ function addDateSeparator(ts) {
   }
 }
 
-function appendMsg(author, content, role, timestamp, attachments, msgId, reactions, ephemeral) {
+function appendMsg(author, content, role, timestamp, attachments, msgId, reactions, ephemeral, avatarColor) {
   const el = document.getElementById('messages');
   const time = timestamp ? timestamp.substring(11, 16) : '';
   const div = document.createElement('div');
@@ -1825,8 +2034,10 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
     msgElements.set(msgId, div);
   }
 
-  const authorColor = role === 'self' ? 'var(--green)' : usernameColor(author);
-  let html = `<span class="time">${esc(time)}</span><span class="author" style="color:${authorColor}">${esc(author)}</span>`;
+  const msgAvatarColor = avatarColor || _avatarColorCache[author] || usernameColor(author);
+  if (avatarColor) _avatarColorCache[author] = avatarColor;
+  const authorColor = role === 'self' ? 'var(--green)' : msgAvatarColor;
+  let html = `<span class="time">${esc(time)}</span><span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;margin-right:8px;flex-shrink:0;font-family:var(--font-mono);background:${msgAvatarColor};vertical-align:middle;cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author[0].toUpperCase())}</span><span class="author" style="color:${authorColor};cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author)}</span>`;
   // Role badges from cache
   html += getRoleBadgesHTML(author);
   if (ephemeral) html += `<span class="eph-badge">${ephemeral}s</span>`;
@@ -2162,8 +2373,9 @@ function handleEvent(d) {
   if (d.id && seenIds.has(d.id)) return;
   if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
   if (d.id) seenIds.add(d.id);
+  if (d.avatar_color) _avatarColorCache[d.author] = d.avatar_color;
   addDateSeparator(d.created_at);
-  appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0);
+  appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0, d.avatar_color);
   scrollBottom();
   if (document.hidden && Notification.permission === 'granted') {
     new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
@@ -2922,11 +3134,19 @@ function _renderMembersWithRoles(groupId, members, customRoles, isOwner) {
     row.dataset.memberName = m.username;
     row.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 0;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border)';
 
-    // Username
+    // Avatar + Username
+    const nameWrap = document.createElement('span');
+    nameWrap.style.cssText = 'flex:1;min-width:80px;display:flex;align-items:center;gap:6px;cursor:pointer';
+    nameWrap.addEventListener('click', () => showProfile(m.username));
+    const memberAvatar = document.createElement('span');
+    memberAvatar.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-size:10px;font-weight:700;color:#fff;font-family:var(--font-mono);flex-shrink:0';
+    memberAvatar.style.background = _avatarColorCache[m.username] || usernameColor(m.username);
+    memberAvatar.textContent = m.username[0].toUpperCase();
+    nameWrap.appendChild(memberAvatar);
     const nameSpan = document.createElement('span');
-    nameSpan.style.cssText = 'flex:1;min-width:80px';
     nameSpan.textContent = m.username;
-    row.appendChild(nameSpan);
+    nameWrap.appendChild(nameSpan);
+    row.appendChild(nameWrap);
 
     // Base role badge
     const roleBadge = document.createElement('span');

@@ -532,6 +532,12 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    # Migration: add profile columns to users
+    for col, default in [("bio", "''"), ("avatar_color", "'#4f8ff7'"), ("banner_color", "'#1a1e26'")]:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
     try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
     except sqlite3.OperationalError:
@@ -1279,6 +1285,18 @@ class ChatHandler(BaseHTTPRequestHandler):
                             react_map[mid] = []
                         react_map[mid].append({"emoji": rx["emoji"], "author": rx["author"]})
 
+                # Build author avatar_color map
+                author_avatar_map = {}  # username -> avatar_color
+                unique_msg_authors = set(r["author"] for r in rows)
+                if unique_msg_authors:
+                    auth_ph = ",".join("?" * len(unique_msg_authors))
+                    avatar_rows = db.execute(
+                        f"SELECT username, avatar_color FROM users WHERE username IN ({auth_ph})",
+                        list(unique_msg_authors)
+                    ).fetchall()
+                    for ar in avatar_rows:
+                        author_avatar_map[ar["username"]] = ar["avatar_color"] or "#4f8ff7"
+
                 # Build author roles map for this channel's group
                 author_roles_map = {}  # username -> [{"role_id", "name", "display_name", "color"}]
                 group_id = room["group_id"] if "group_id" in room.keys() else None
@@ -1308,6 +1326,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     m["attachments"] = []
                 m["reactions"] = react_map.get(m["id"], [])
                 m["author_roles"] = author_roles_map.get(m["author"], [])
+                m["avatar_color"] = author_avatar_map.get(m["author"], "#4f8ff7")
                 messages.append(m)
             self.send_json({
                 "ok": True,
@@ -1474,6 +1493,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     # Include custom roles for this group
                     role_rows = db.execute("SELECT id, name, display_name, color, position FROM group_roles WHERE group_id = ? ORDER BY position DESC", (gid,)).fetchall()
                     g["roles"] = [dict(rr) for rr in role_rows]
+                    # Include avatar_colors for group members
+                    member_rows = db.execute(
+                        "SELECT u.username, u.avatar_color FROM users u INNER JOIN group_members gm ON u.username = gm.username WHERE gm.group_id = ?",
+                        (gid,)
+                    ).fetchall()
+                    g["member_colors"] = {mr["username"]: (mr["avatar_color"] or "#4f8ff7") for mr in member_rows}
                     groups.append(g)
 
                 # System channels (no group, visibility='system')
@@ -1534,6 +1559,27 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 db.close()
             self.send_json({"ok": True, "roles": roles, "user_assignments": user_assignments})
+            return
+
+        # API: get profile — GET /api/profile/{username}
+        if re.match(r'^/api/profile/[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]+$', path):
+            profile_user = unquote(path.split("/")[3])[:20]
+            db = get_db()
+            try:
+                row = db.execute("SELECT username, bio, avatar_color, banner_color, created_at FROM users WHERE username = ?", (profile_user,)).fetchone()
+                if not row:
+                    self.send_json({"ok": False, "error": "user not found"}, 404)
+                    return
+                self.send_json({
+                    "ok": True,
+                    "username": row["username"],
+                    "bio": row["bio"] or "",
+                    "avatar_color": row["avatar_color"] or "#4f8ff7",
+                    "banner_color": row["banner_color"] or "#1a1e26",
+                    "created_at": row["created_at"],
+                })
+            finally:
+                db.close()
             return
 
         self.send_error(404)
@@ -2078,6 +2124,14 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             touch_online(author, client_ip, channel)
 
+            # Fetch author's avatar_color for broadcast
+            db_ac = get_db()
+            try:
+                ac_row = db_ac.execute("SELECT avatar_color FROM users WHERE username = ?", (author,)).fetchone()
+                author_avatar_color = ac_row["avatar_color"] if ac_row and ac_row["avatar_color"] else "#4f8ff7"
+            finally:
+                db_ac.close()
+
             # Ephemeral mode: message is NOT saved, only broadcast + auto-expires
             try:
                 ephemeral = int(body.get("ephemeral", 0))
@@ -2097,6 +2151,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     "ephemeral": ephemeral,
                     "attachments": attachments,  # Send full data for ephemeral (not saved)
                     "created_at": ts,
+                    "avatar_color": author_avatar_color,
                 }
                 broadcast(broadcast_data, channel)
                 self.send_json({"ok": True, "id": msg_id, "channel": channel, "ephemeral": ephemeral})
@@ -2127,6 +2182,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "attachments": [{"name": a.get("name", ""), "type": a.get("type", "")} for a in attachments] if attachments else [],
                 "has_attachments": bool(attachments),
                 "created_at": ts,
+                "avatar_color": author_avatar_color,
             }
             broadcast(broadcast_data, channel)
 
@@ -3612,6 +3668,50 @@ class ChatHandler(BaseHTTPRequestHandler):
                 db.close()
             broadcast({"event_type": "user_role_removed", "group_id": group_id, "username": target, "role_id": role_id})
             self.send_json({"ok": True, "username": target, "role_id": role_id})
+            return
+
+        # API: update profile — POST /api/profile/update
+        if path == "/api/profile/update":
+            uname = body.get("username", "").strip()[:20]
+            token = body.get("token", "")
+            bio = body.get("bio", "").strip()[:200]
+            avatar_color = body.get("avatar_color", "").strip()[:20]
+            banner_color = body.get("banner_color", "").strip()[:20]
+            if not uname or not token:
+                self.send_json({"ok": False, "error": "username and token required"}, 400)
+                return
+            # Validate hex colors
+            hex_re = re.compile(r'^#[0-9a-fA-F]{6}$')
+            if avatar_color and not hex_re.match(avatar_color):
+                self.send_json({"ok": False, "error": "invalid avatar_color"}, 400)
+                return
+            if banner_color and not hex_re.match(banner_color):
+                self.send_json({"ok": False, "error": "invalid banner_color"}, 400)
+                return
+            db = get_db()
+            try:
+                user = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (uname, token)).fetchone()
+                if not user:
+                    self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                    return
+                updates = []
+                params_list = []
+                if bio is not None:
+                    updates.append("bio = ?")
+                    params_list.append(bio)
+                if avatar_color:
+                    updates.append("avatar_color = ?")
+                    params_list.append(avatar_color)
+                if banner_color:
+                    updates.append("banner_color = ?")
+                    params_list.append(banner_color)
+                if updates:
+                    params_list.append(uname)
+                    db.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = ?", params_list)
+                    db.commit()
+            finally:
+                db.close()
+            self.send_json({"ok": True})
             return
 
         self.send_json({"ok": False, "error": "not found"}, 404)
