@@ -675,7 +675,7 @@ body {
   <div class="channel-list" id="channel-list" role="list"></div>
   <button id="new-channel-btn" onclick="showCreateGroupModal()">+ Skapa grupp</button>
   <div id="conn-info">
-    <span id="sidebar-avatar" onclick="showEditProfile()" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;cursor:pointer;flex-shrink:0;font-family:var(--font-mono);background:#4f8ff7" title="Redigera profil">F</span>
+    <span id="sidebar-avatar" onclick="showEditProfile()" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;cursor:pointer;flex-shrink:0;font-family:var(--font-mono);background:#4f8ff7;overflow:hidden" title="Redigera profil">F</span>
     <span class="user-name" id="user-display" onclick="showEditProfile()" style="cursor:pointer" title="Redigera profil"></span>
     <button id="logout-btn" onclick="doLogout()">Logga ut</button>
   </div>
@@ -916,7 +916,7 @@ body {
   <div style="background:var(--bg-surface);border-radius:16px;width:340px;max-width:90%;overflow:hidden;border:1px solid var(--border)">
     <div id="profile-banner" style="height:80px;background:#1a1e26"></div>
     <div style="padding:0 20px;margin-top:-32px">
-      <div id="profile-avatar" style="width:64px;height:64px;border-radius:50%;background:#4f8ff7;border:4px solid var(--bg-surface);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;font-family:var(--font-mono)">F</div>
+      <div id="profile-avatar" style="width:64px;height:64px;border-radius:50%;background:#4f8ff7;border:4px solid var(--bg-surface);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;font-family:var(--font-mono);overflow:hidden">F</div>
     </div>
     <div style="padding:12px 20px 20px">
       <div id="profile-name" style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--text-primary)">Username</div>
@@ -932,6 +932,12 @@ body {
 <div id="edit-profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:450;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--bg-surface);border-radius:16px;width:380px;max-width:90%;overflow:hidden;border:1px solid var(--border);padding:24px">
     <h2 style="font-family:var(--font-mono);font-size:14px;color:var(--accent);margin-bottom:16px">Redigera profil</h2>
+    <div style="margin-bottom:16px;text-align:center">
+      <div id="edit-avatar-preview" style="width:80px;height:80px;border-radius:50%;margin:0 auto 10px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:32px;color:#fff;font-weight:700;overflow:hidden;cursor:pointer;font-family:var(--font-mono)" onclick="document.getElementById('avatar-upload').click()">
+      </div>
+      <input type="file" id="avatar-upload" accept="image/*" style="display:none" onchange="handleAvatarUpload(this)">
+      <button onclick="document.getElementById('avatar-upload').click()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-family:var(--font-mono);font-size:11px;padding:6px 12px;cursor:pointer">Byt profilbild</button>
+    </div>
     <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px">Bio</label>
     <textarea id="ep-bio" maxlength="200" rows="3" placeholder="Skriv nagot om dig..." style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:10px;outline:none;resize:vertical;margin-bottom:4px;box-sizing:border-box"></textarea>
     <div id="ep-bio-count" style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);text-align:right;margin-bottom:12px">0/200</div>
@@ -998,21 +1004,66 @@ function usernameColor(name) {
 }
 
 // === Profile system ===
-let _profileCache = {}; // username -> {bio, avatar_color, banner_color, created_at}
+let _profileCache = {}; // username -> {bio, avatar_color, banner_color, avatar, created_at}
 let _myAvatarColor = localStorage.getItem('flow-avatar-color') || '#4f8ff7';
 let _myBannerColor = localStorage.getItem('flow-banner-color') || '#1a1e26';
+let _myAvatar = ''; // current user's profile picture data URL
 let _avatarColorCache = {}; // username -> avatar_color (from messages/groups)
+let _avatarCache = {}; // username -> avatar data URL (profile pictures)
 
 const AVATAR_COLORS = ['#4f8ff7','#3fb950','#f85149','#d29922','#bc8cff','#f778ba','#58a6ff','#e3b341','#56d364','#ff7b72'];
 const BANNER_COLORS = ['#1a1e26','#0d1117','#161b22','#1c2333','#1b2735','#1a1a2e','#16213e','#0f3460','#2d1b69','#3b1f2b'];
+
+function handleAvatarUpload(input) {
+  const file = input.files[0];
+  if (!file || !file.type.startsWith('image/')) return;
+  if (file.size > 5 * 1024 * 1024) { alert('Max 5MB'); return; }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      const size = Math.min(img.width, img.height);
+      const sx = (img.width - size) / 2;
+      const sy = (img.height - size) / 2;
+      ctx.drawImage(img, sx, sy, size, size, 0, 0, 128, 128);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      document.getElementById('edit-avatar-preview').innerHTML = '<img src="' + dataUrl + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      window._pendingAvatar = dataUrl;
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function _renderAvatarEl(el, avatarUrl, initial, bgColor) {
+  if (avatarUrl) {
+    el.innerHTML = '<img src="' + avatarUrl + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+  } else {
+    el.innerHTML = '';
+    el.textContent = initial;
+    el.style.background = bgColor;
+  }
+}
 
 async function showProfile(targetUser) {
   const modal = document.getElementById('profile-modal');
   modal.style.display = 'flex';
   // Set defaults while loading
   document.getElementById('profile-name').textContent = targetUser;
-  document.getElementById('profile-avatar').textContent = targetUser[0].toUpperCase();
-  document.getElementById('profile-avatar').style.background = _avatarColorCache[targetUser] || usernameColor(targetUser);
+  const profileAvatarEl = document.getElementById('profile-avatar');
+  // Show cached avatar if available, otherwise initial
+  const cachedAvt = _avatarCache[targetUser];
+  if (cachedAvt) {
+    profileAvatarEl.innerHTML = '<img src="' + cachedAvt + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+  } else {
+    profileAvatarEl.innerHTML = '';
+    profileAvatarEl.textContent = targetUser[0].toUpperCase();
+  }
+  profileAvatarEl.style.background = _avatarColorCache[targetUser] || usernameColor(targetUser);
   document.getElementById('profile-banner').style.background = '#1a1e26';
   document.getElementById('profile-bio').textContent = 'Laddar...';
   document.getElementById('profile-joined').textContent = '';
@@ -1021,7 +1072,14 @@ async function showProfile(targetUser) {
     const res = await fetch('/api/profile/' + encodeURIComponent(targetUser)).then(r => r.json());
     if (res.ok) {
       _profileCache[targetUser] = res;
-      document.getElementById('profile-avatar').style.background = res.avatar_color || '#4f8ff7';
+      if (res.avatar) {
+        _avatarCache[targetUser] = res.avatar;
+        profileAvatarEl.innerHTML = '<img src="' + res.avatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      } else {
+        profileAvatarEl.innerHTML = '';
+        profileAvatarEl.textContent = targetUser[0].toUpperCase();
+      }
+      profileAvatarEl.style.background = res.avatar_color || '#4f8ff7';
       document.getElementById('profile-banner').style.background = res.banner_color || '#1a1e26';
       document.getElementById('profile-bio').textContent = res.bio || 'Ingen bio annu';
       if (res.created_at) {
@@ -1050,6 +1108,17 @@ async function showProfile(targetUser) {
 function showEditProfile() {
   const modal = document.getElementById('edit-profile-modal');
   modal.style.display = 'flex';
+  window._pendingAvatar = null;
+  // Avatar preview
+  const previewEl = document.getElementById('edit-avatar-preview');
+  const currentAvatarImg = _avatarCache[username] || _myAvatar;
+  if (currentAvatarImg) {
+    previewEl.innerHTML = '<img src="' + currentAvatarImg + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+  } else {
+    previewEl.innerHTML = '';
+    previewEl.textContent = username[0].toUpperCase();
+    previewEl.style.background = _myAvatarColor;
+  }
   // Bio
   const bioEl = document.getElementById('ep-bio');
   const cached = _profileCache[username];
@@ -1096,6 +1165,11 @@ function showEditProfile() {
         document.getElementById('ep-bio-count').textContent = bioEl.value.length + '/200';
         _myAvatarColor = res.avatar_color || '#4f8ff7';
         _myBannerColor = res.banner_color || '#1a1e26';
+        if (res.avatar) {
+          _myAvatar = res.avatar;
+          _avatarCache[username] = res.avatar;
+          previewEl.innerHTML = '<img src="' + res.avatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+        }
         // Re-select correct swatches
         avatarDiv.querySelectorAll('div').forEach(d => d.style.borderColor = d.dataset.color === _myAvatarColor ? 'var(--text-primary)' : 'transparent');
         bannerDiv.querySelectorAll('div').forEach(d => d.style.borderColor = d.dataset.color === _myBannerColor ? 'var(--text-primary)' : 'transparent');
@@ -1116,18 +1190,29 @@ async function saveProfile() {
     const res = await fetch('/api/profile/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, token: userToken, bio, avatar_color: avatarColor, banner_color: bannerColor }),
+      body: JSON.stringify({ username, token: userToken, bio, avatar_color: avatarColor, banner_color: bannerColor, ...(window._pendingAvatar ? { avatar: window._pendingAvatar } : {}) }),
     }).then(r => r.json());
     if (res.ok) {
       _myAvatarColor = avatarColor;
       _myBannerColor = bannerColor;
       localStorage.setItem('flow-avatar-color', avatarColor);
       localStorage.setItem('flow-banner-color', bannerColor);
-      _profileCache[username] = { ..._profileCache[username], bio, avatar_color: avatarColor, banner_color: bannerColor };
+      if (window._pendingAvatar) {
+        _myAvatar = window._pendingAvatar;
+        _avatarCache[username] = window._pendingAvatar;
+      }
+      _profileCache[username] = { ..._profileCache[username], bio, avatar_color: avatarColor, banner_color: bannerColor, avatar: _myAvatar };
       _avatarColorCache[username] = avatarColor;
       // Update sidebar avatar
       const sidebarAvatar = document.getElementById('sidebar-avatar');
-      sidebarAvatar.style.background = avatarColor;
+      if (_myAvatar) {
+        sidebarAvatar.innerHTML = '<img src="' + _myAvatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      } else {
+        sidebarAvatar.innerHTML = '';
+        sidebarAvatar.textContent = username[0].toUpperCase();
+        sidebarAvatar.style.background = avatarColor;
+      }
+      window._pendingAvatar = null;
       document.getElementById('edit-profile-modal').style.display = 'none';
     } else {
       document.getElementById('ep-error').textContent = res.error || 'Kunde inte spara';
@@ -1456,7 +1541,7 @@ async function startChat() {
   const sidebarAvatar = document.getElementById('sidebar-avatar');
   sidebarAvatar.textContent = username[0].toUpperCase();
   sidebarAvatar.style.background = _myAvatarColor;
-  // Fetch own profile for sidebar avatar color
+  // Fetch own profile for sidebar avatar color + picture
   fetch('/api/profile/' + encodeURIComponent(username)).then(r => r.json()).then(res => {
     if (res.ok) {
       _profileCache[username] = res;
@@ -1465,7 +1550,13 @@ async function startChat() {
       _avatarColorCache[username] = _myAvatarColor;
       localStorage.setItem('flow-avatar-color', _myAvatarColor);
       localStorage.setItem('flow-banner-color', _myBannerColor);
-      sidebarAvatar.style.background = _myAvatarColor;
+      if (res.avatar) {
+        _myAvatar = res.avatar;
+        _avatarCache[username] = res.avatar;
+        sidebarAvatar.innerHTML = '<img src="' + res.avatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      } else {
+        sidebarAvatar.style.background = _myAvatarColor;
+      }
     }
   }).catch(() => {});
 
@@ -1521,9 +1612,12 @@ async function loadChannels() {
 
     channelData = [...systemChannels];
     groups.forEach(g => {
-      // Cache member avatar colors from group data
+      // Cache member avatar colors and profile pictures from group data
       if (g.member_colors) {
         Object.assign(_avatarColorCache, g.member_colors);
+      }
+      if (g.member_avatars) {
+        Object.assign(_avatarCache, g.member_avatars);
       }
       (g.channels || []).forEach(ch => {
         ch._group = g;
@@ -1830,7 +1924,13 @@ function makeVoiceRow(c) {
     const memberColor = (c._group && c._group.member_colors && c._group.member_colors[m]) || _avatarColorCache[m] || usernameColor(m);
     avatar.style.background = memberColor;
     avatar.style.color = '#fff';
-    avatar.textContent = m.charAt(0).toUpperCase();
+    avatar.style.overflow = 'hidden';
+    const voiceMemberAvatar = _avatarCache[m] || (c._group && c._group.member_avatars && c._group.member_avatars[m]) || '';
+    if (voiceMemberAvatar) {
+      avatar.innerHTML = '<img src="' + voiceMemberAvatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+    } else {
+      avatar.textContent = m.charAt(0).toUpperCase();
+    }
     avatar.style.cursor = 'pointer';
     avatar.addEventListener('click', (e) => { e.stopPropagation(); showProfile(m); });
     mRow.appendChild(avatar);
@@ -1999,7 +2099,8 @@ async function loadMessages(channel) {
         seenIds.add(m.id);
         addDateSeparator(m.created_at);
         if (m.avatar_color) _avatarColorCache[m.author] = m.avatar_color;
-        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || [], m.id, m.reactions || [], 0, m.avatar_color);
+        if (m.avatar) _avatarCache[m.author] = m.avatar;
+        appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments || [], m.id, m.reactions || [], 0, m.avatar_color, m.avatar);
       });
     }
   } catch(e) {
@@ -2023,7 +2124,7 @@ function addDateSeparator(ts) {
   }
 }
 
-function appendMsg(author, content, role, timestamp, attachments, msgId, reactions, ephemeral, avatarColor) {
+function appendMsg(author, content, role, timestamp, attachments, msgId, reactions, ephemeral, avatarColor, avatarImg) {
   const el = document.getElementById('messages');
   const time = timestamp ? timestamp.substring(11, 16) : '';
   const div = document.createElement('div');
@@ -2036,8 +2137,11 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
 
   const msgAvatarColor = avatarColor || _avatarColorCache[author] || usernameColor(author);
   if (avatarColor) _avatarColorCache[author] = avatarColor;
+  if (avatarImg) _avatarCache[author] = avatarImg;
+  const msgAvatarImg = avatarImg || _avatarCache[author] || '';
   const authorColor = role === 'self' ? 'var(--green)' : msgAvatarColor;
-  let html = `<span class="time">${esc(time)}</span><span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;margin-right:8px;flex-shrink:0;font-family:var(--font-mono);background:${msgAvatarColor};vertical-align:middle;cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author[0].toUpperCase())}</span><span class="author" style="color:${authorColor};cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author)}</span>`;
+  const avatarContent = msgAvatarImg ? '<img src="' + esc(msgAvatarImg) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">' : esc(author[0].toUpperCase());
+  let html = `<span class="time">${esc(time)}</span><span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;margin-right:8px;flex-shrink:0;font-family:var(--font-mono);background:${msgAvatarColor};vertical-align:middle;cursor:pointer;overflow:hidden" onclick="showProfile('${escAttr(author)}')">${avatarContent}</span><span class="author" style="color:${authorColor};cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author)}</span>`;
   // Role badges from cache
   html += getRoleBadgesHTML(author);
   if (ephemeral) html += `<span class="eph-badge">${ephemeral}s</span>`;
@@ -2374,8 +2478,9 @@ function handleEvent(d) {
   if (d.author === username && Date.now() - (window._lastSend || 0) < 3000) return;
   if (d.id) seenIds.add(d.id);
   if (d.avatar_color) _avatarColorCache[d.author] = d.avatar_color;
+  if (d.avatar) _avatarCache[d.author] = d.avatar;
   addDateSeparator(d.created_at);
-  appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0, d.avatar_color);
+  appendMsg(d.author || 'unknown', d.content || '', 'user', d.created_at, d.attachments || [], d.id, [], d.ephemeral || 0, d.avatar_color, d.avatar);
   scrollBottom();
   if (document.hidden && Notification.permission === 'granted') {
     new Notification(d.author + ' i #' + d.channel, { body: (d.content || '').substring(0, 100) });
@@ -2594,7 +2699,7 @@ async function send() {
   // Optimistic render
   const tempId = 'tmp-' + Date.now();
   addDateSeparator(new Date().toISOString());
-  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments, tempId, [], ephSec);
+  appendMsg(username, text || '', 'self', new Date().toISOString(), attachments, tempId, [], ephSec, _myAvatarColor, _myAvatar);
   scrollBottom(true);
 
   try {
@@ -3141,7 +3246,13 @@ function _renderMembersWithRoles(groupId, members, customRoles, isOwner) {
     const memberAvatar = document.createElement('span');
     memberAvatar.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-size:10px;font-weight:700;color:#fff;font-family:var(--font-mono);flex-shrink:0';
     memberAvatar.style.background = _avatarColorCache[m.username] || usernameColor(m.username);
-    memberAvatar.textContent = m.username[0].toUpperCase();
+    memberAvatar.style.overflow = 'hidden';
+    const memberAvatarImg = _avatarCache[m.username] || '';
+    if (memberAvatarImg) {
+      memberAvatar.innerHTML = '<img src="' + memberAvatarImg + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+    } else {
+      memberAvatar.textContent = m.username[0].toUpperCase();
+    }
     nameWrap.appendChild(memberAvatar);
     const nameSpan = document.createElement('span');
     nameSpan.textContent = m.username;
