@@ -1745,9 +1745,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "payload too large (max 5MB)"}, 413)
             return
         try:
-            body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            body = json.loads(raw_body)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             self.send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
+        except Exception as e:
+            self.send_json({"ok": False, "error": "read error: " + str(e)}, 400)
             return
 
         # API: admin login
@@ -4084,14 +4088,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                         self.send_json({"ok": False, "error": "kan inte doda en annan impostor"}, 400)
                         return
                     # Check cooldown
-                    now = time.time()
+                    now_t = time.time()
                     last_kill = game['kill_cooldown'].get(author, 0)
-                    if now - last_kill < 30:
-                        remaining = int(30 - (now - last_kill))
+                    if now_t - last_kill < 30:
+                        remaining = int(30 - (now_t - last_kill))
                         self.send_json({"ok": False, "error": f"cooldown: {remaining}s kvar"}, 400)
                         return
                     target_player['alive'] = False
-                    game['kill_cooldown'][author] = now
+                    game['kill_cooldown'][author] = now_t
                     game['dead_bodies'].append(target)
                     # Check win
                     winner = check_game_win(game)
