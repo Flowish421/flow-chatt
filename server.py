@@ -19,6 +19,7 @@ import socket
 import signal
 import sys
 import gzip
+import secrets
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -57,15 +58,28 @@ DISPOSABLE_DOMAINS = {
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 def hash_password(password):
-    salt = uuid.uuid4().hex[:16]
-    hashed = hashlib.sha256((salt + password).encode()).hexdigest()
-    return salt + ":" + hashed
+    salt = os.urandom(16)
+    hashed = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600000)
+    return salt.hex() + ":" + hashed.hex()
 
 def verify_password(stored, password):
     if ":" not in stored:
         return False
-    salt, hashed = stored.split(":", 1)
-    return hashlib.sha256((salt + password).encode()).hexdigest() == hashed
+    salt_part, hashed_part = stored.split(":", 1)
+    try:
+        if len(salt_part) == 16:
+            # Legacy SHA-256 format
+            return hmac.compare_digest(
+                hashlib.sha256((salt_part + password).encode()).hexdigest(),
+                hashed_part
+            )
+        else:
+            # New PBKDF2 format
+            salt = bytes.fromhex(salt_part)
+            hashed = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600000)
+            return hmac.compare_digest(hashed.hex(), hashed_part)
+    except (ValueError, TypeError):
+        return False
 
 WELCOME_TEXT = """Valkommen till Quiver! Borja chatta direkt har, eller skapa en grupp med "+ Skapa grupp" i sidofaltet."""
 
@@ -266,6 +280,11 @@ def check_user_spam(author):
     """Returns True if allowed, False if user is sending too fast."""
     now_t = time.time()
     with user_msg_lock:
+        # Prune if dict grows too large
+        if len(user_msg_times) > 10000:
+            sorted_authors = sorted(user_msg_times.keys(), key=lambda a: user_msg_times[a][-1] if user_msg_times[a] else 0)
+            for a in sorted_authors[:len(sorted_authors) // 2]:
+                del user_msg_times[a]
         if author not in user_msg_times:
             user_msg_times[author] = []
         user_msg_times[author] = [t for t in user_msg_times[author] if now_t - t < 60]
@@ -817,6 +836,7 @@ class WebSocketConnection:
                             broadcast({"event_type": "typing", "username": self.username, "channel": channel}, channel=channel)
                     # WebRTC signaling relay — send to specific user
                     elif msg.get("type") in ("call_offer", "call_answer", "ice_candidate", "call_reject", "call_hangup"):
+                        msg["from"] = self.username
                         send_to_user(msg.get("to"), msg)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
@@ -1000,6 +1020,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", len(content))
             self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(content)
         except FileNotFoundError:
@@ -1626,7 +1647,6 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "token": session})
             else:
                 record_admin_failure(client_ip)
-                time.sleep(1)  # Slow down brute force
                 self.send_json({"ok": False, "error": "Fel losenord"}, 401)
             return
 
@@ -1718,8 +1738,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not uname:
                 self.send_json({"ok": False, "error": "username required"}, 400)
                 return
-            import random
-            reset_code = f"{random.randint(0, 99999999):08d}"
+            reset_code = f"{secrets.randbelow(90000000) + 10000000:08d}"
             db = get_db()
             try:
                 row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
@@ -1746,8 +1765,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not re.match(r'^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]{2,20}$', uname):
                 self.send_json({"ok": False, "error": "Bara bokstaver, siffror, - och _"}, 400)
                 return
-            if len(password) < 4:
-                self.send_json({"ok": False, "error": "Losenord maste vara minst 4 tecken"}, 400)
+            if len(password) < 6:
+                self.send_json({"ok": False, "error": "Losenord maste vara minst 6 tecken"}, 400)
                 return
 
             hashed_pw = hash_password(password)
@@ -1813,8 +1832,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     return
 
                 # Generate 6-digit code
-                import random
-                code = f"{random.randint(0, 999999):06d}"
+                code = f"{secrets.randbelow(900000) + 100000:06d}"
                 expires_at = time.time() + 600  # 10 minutes
 
                 # Upsert pending code
@@ -1917,7 +1935,6 @@ class ChatHandler(BaseHTTPRequestHandler):
                     (uname,)
                 ).fetchone()
                 if not row:
-                    time.sleep(0.5)
                     self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
                     return
 
@@ -1933,17 +1950,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                         self.send_json({"ok": True, "username": row["username"], "token": row["token"], "must_change_password": True})
                         return
                     else:
-                        time.sleep(0.5)
                         self.send_json({"ok": False, "error": "Ogiltig aterstallningskod"}, 401)
                         return
 
                 # Normal password login
                 stored_pw = row["password"] or ""
                 if not stored_pw:
-                    # Legacy account without password — allow login and set password
-                    if password:
-                        db.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(password), uname))
-                        db.commit()
+                    self.send_json({"ok": False, "error": "Konto utan losenord — kontakta admin for aterstallning"}, 401)
+                    return
                 elif not verify_password(stored_pw, password):
                     # Password wrong — check if it's a reset code
                     reset_row = db.execute(
@@ -1955,7 +1969,6 @@ class ChatHandler(BaseHTTPRequestHandler):
                         db.commit()
                         self.send_json({"ok": True, "username": row["username"], "token": row["token"], "must_change_password": True})
                         return
-                    time.sleep(0.5)
                     self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
                     return
                 self.send_json({"ok": True, "username": row["username"], "token": row["token"]})
@@ -1972,8 +1985,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not uname or not token or not new_password:
                 self.send_json({"ok": False, "error": "Alla falt kravs"}, 400)
                 return
-            if len(new_password) < 4:
-                self.send_json({"ok": False, "error": "Losenord maste vara minst 4 tecken"}, 400)
+            if len(new_password) < 6:
+                self.send_json({"ok": False, "error": "Losenord maste vara minst 6 tecken"}, 400)
                 return
             db = get_db()
             try:
@@ -1991,11 +2004,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                         self.send_json({"ok": False, "error": "Fel nuvarande losenord"}, 401)
                         return
                 hashed_new = hash_password(new_password)
-                db.execute("UPDATE users SET password = ? WHERE username = ?", (hashed_new, uname))
+                new_token = uuid.uuid4().hex
+                db.execute("UPDATE users SET password = ?, token = ? WHERE username = ?", (hashed_new, new_token, uname))
                 db.commit()
             finally:
                 db.close()
-            self.send_json({"ok": True})
+            self.send_json({"ok": True, "token": new_token})
             return
 
         # API: request password reset
@@ -2008,8 +2022,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             try:
                 row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
                 if row:
-                    import random
-                    reset_code = f"{random.randint(0, 99999999):08d}"
+                    reset_code = f"{secrets.randbelow(90000000) + 10000000:08d}"
                     db.execute(
                         "INSERT INTO password_resets (id, username, reset_code, created_at) VALUES (?, ?, ?, ?)",
                         (uuid.uuid4().hex, uname, reset_code, now())

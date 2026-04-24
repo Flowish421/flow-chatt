@@ -1002,8 +1002,12 @@ let currentRoomAccess = 'system'; // 'system'|'read'|'write'|'owner'
 let channelData = []; // cached channel list
 let groupData = [];           // cached groups from API
 let currentGroup = null;      // active group id
-let collapsedGroups = new Set(JSON.parse(localStorage.getItem('flow-collapsed-groups') || '[]'));
-let username = localStorage.getItem('cortex-chat-user') || '';
+let collapsedGroups;
+try { collapsedGroups = new Set(JSON.parse(localStorage.getItem('flow-collapsed-groups') || '[]')); }
+catch(e) { collapsedGroups = new Set(); }
+let username;
+try { username = localStorage.getItem('cortex-chat-user') || ''; }
+catch(e) { username = ''; }
 let eventSource = null;
 const seenIds = new Set();
 let lastDateShown = '';
@@ -1045,8 +1049,12 @@ function usernameColor(name) {
 
 // === Profile system ===
 let _profileCache = {}; // username -> {bio, avatar_color, banner_color, avatar, created_at}
-let _myAvatarColor = localStorage.getItem('flow-avatar-color') || '#4f8ff7';
-let _myBannerColor = localStorage.getItem('flow-banner-color') || '#1a1e26';
+let _myAvatarColor;
+try { _myAvatarColor = localStorage.getItem('flow-avatar-color') || '#4f8ff7'; }
+catch(e) { _myAvatarColor = '#4f8ff7'; }
+let _myBannerColor;
+try { _myBannerColor = localStorage.getItem('flow-banner-color') || '#1a1e26'; }
+catch(e) { _myBannerColor = '#1a1e26'; }
 let _myAvatar = ''; // current user's profile picture data URL
 let _avatarColorCache = {}; // username -> avatar_color (from messages/groups)
 let _avatarCache = {}; // username -> avatar data URL (profile pictures)
@@ -1071,7 +1079,7 @@ function handleAvatarUpload(input) {
       const sy = (img.height - size) / 2;
       ctx.drawImage(img, sx, sy, size, size, 0, 0, 128, 128);
       const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      document.getElementById('edit-avatar-preview').innerHTML = '<img src="' + dataUrl + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      document.getElementById('edit-avatar-preview').innerHTML = '<img src="' + esc(safeUrl(dataUrl)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
       window._pendingAvatar = dataUrl;
     };
     img.src = e.target.result;
@@ -1081,7 +1089,7 @@ function handleAvatarUpload(input) {
 
 function _renderAvatarEl(el, avatarUrl, initial, bgColor) {
   if (avatarUrl) {
-    el.innerHTML = '<img src="' + avatarUrl + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+    el.innerHTML = '<img src="' + esc(safeUrl(avatarUrl)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
   } else {
     el.innerHTML = '';
     el.textContent = initial;
@@ -1098,7 +1106,7 @@ async function showProfile(targetUser) {
   // Show cached avatar if available, otherwise initial
   const cachedAvt = _avatarCache[targetUser];
   if (cachedAvt) {
-    profileAvatarEl.innerHTML = '<img src="' + cachedAvt + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+    profileAvatarEl.innerHTML = '<img src="' + esc(safeUrl(cachedAvt)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
   } else {
     profileAvatarEl.innerHTML = '';
     profileAvatarEl.textContent = targetUser[0].toUpperCase();
@@ -1114,7 +1122,7 @@ async function showProfile(targetUser) {
       _profileCache[targetUser] = res;
       if (res.avatar) {
         _avatarCache[targetUser] = res.avatar;
-        profileAvatarEl.innerHTML = '<img src="' + res.avatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+        profileAvatarEl.innerHTML = '<img src="' + esc(safeUrl(res.avatar)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
       } else {
         profileAvatarEl.innerHTML = '';
         profileAvatarEl.textContent = targetUser[0].toUpperCase();
@@ -1134,7 +1142,7 @@ async function showProfile(targetUser) {
           roles[targetUser].forEach(r => {
             const badge = document.createElement('span');
             badge.className = 'custom-role-badge';
-            badge.innerHTML = '<span class="role-dot" style="background:' + (r.color || '#99aab5') + '"></span>' + esc(r.display_name || r.name);
+            badge.innerHTML = '<span class="role-dot" style="background:' + safeColor(r.color) + '"></span>' + esc(r.display_name || r.name);
             rolesDiv.appendChild(badge);
           });
         }
@@ -1153,7 +1161,7 @@ function showEditProfile() {
   const previewEl = document.getElementById('edit-avatar-preview');
   const currentAvatarImg = _avatarCache[username] || _myAvatar;
   if (currentAvatarImg) {
-    previewEl.innerHTML = '<img src="' + currentAvatarImg + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+    previewEl.innerHTML = '<img src="' + esc(safeUrl(currentAvatarImg)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
   } else {
     previewEl.innerHTML = '';
     previewEl.textContent = username[0].toUpperCase();
@@ -1208,7 +1216,7 @@ function showEditProfile() {
         if (res.avatar) {
           _myAvatar = res.avatar;
           _avatarCache[username] = res.avatar;
-          previewEl.innerHTML = '<img src="' + res.avatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+          previewEl.innerHTML = '<img src="' + esc(safeUrl(res.avatar)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
         }
         // Re-select correct swatches
         avatarDiv.querySelectorAll('div').forEach(d => d.style.borderColor = d.dataset.color === _myAvatarColor ? 'var(--text-primary)' : 'transparent');
@@ -1246,7 +1254,7 @@ async function saveProfile() {
       // Update sidebar avatar
       const sidebarAvatar = document.getElementById('sidebar-avatar');
       if (_myAvatar) {
-        sidebarAvatar.innerHTML = '<img src="' + _myAvatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+        sidebarAvatar.innerHTML = '<img src="' + esc(safeUrl(_myAvatar)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
       } else {
         sidebarAvatar.innerHTML = '';
         sidebarAvatar.textContent = username[0].toUpperCase();
@@ -1321,7 +1329,9 @@ function clearTypingIndicators() {
 }
 
 // === Init ===
-let userToken = localStorage.getItem('cortex-chat-token') || '';
+let userToken;
+try { userToken = localStorage.getItem('cortex-chat-token') || ''; }
+catch(e) { userToken = ''; }
 
 async function init() {
   // If we have saved credentials, verify them
@@ -1593,7 +1603,7 @@ async function startChat() {
       if (res.avatar) {
         _myAvatar = res.avatar;
         _avatarCache[username] = res.avatar;
-        sidebarAvatar.innerHTML = '<img src="' + res.avatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+        sidebarAvatar.innerHTML = '<img src="' + esc(safeUrl(res.avatar)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
       } else {
         sidebarAvatar.style.background = _myAvatarColor;
       }
@@ -1978,7 +1988,7 @@ function makeVoiceRow(c) {
     avatar.style.overflow = 'hidden';
     const voiceMemberAvatar = _avatarCache[m] || (c._group && c._group.member_avatars && c._group.member_avatars[m]) || '';
     if (voiceMemberAvatar) {
-      avatar.innerHTML = '<img src="' + voiceMemberAvatar + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      avatar.innerHTML = '<img src="' + esc(safeUrl(voiceMemberAvatar)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
     } else {
       avatar.textContent = m.charAt(0).toUpperCase();
     }
@@ -2191,7 +2201,7 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
   if (avatarImg) _avatarCache[author] = avatarImg;
   const msgAvatarImg = avatarImg || _avatarCache[author] || '';
   const authorColor = role === 'self' ? 'var(--green)' : msgAvatarColor;
-  const avatarContent = msgAvatarImg ? '<img src="' + esc(msgAvatarImg) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">' : esc(author[0].toUpperCase());
+  const avatarContent = msgAvatarImg ? '<img src="' + esc(safeUrl(msgAvatarImg)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">' : esc(author[0].toUpperCase());
   let html = `<span class="time">${esc(time)}</span><span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;margin-right:8px;flex-shrink:0;font-family:var(--font-mono);background:${msgAvatarColor};vertical-align:middle;cursor:pointer;overflow:hidden" onclick="showProfile('${escAttr(author)}')">${avatarContent}</span><span class="author" style="color:${authorColor};cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author)}</span>`;
   // Role badges from cache
   html += getRoleBadgesHTML(author);
@@ -2868,7 +2878,7 @@ function getRoleBadgesHTML(author) {
   if (!roles || roles.length === 0) return '';
   let html = '<span class="msg-role-badges">';
   roles.forEach(r => {
-    html += '<span class="custom-role-badge"><span class="role-dot" style="background:' + (r.color || '#888') + '"></span>' + esc(r.name) + '</span>';
+    html += '<span class="custom-role-badge"><span class="role-dot" style="background:' + safeColor(r.color) + '"></span>' + esc(r.name) + '</span>';
   });
   html += '</span>';
   return html;
@@ -2916,6 +2926,15 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
   return d.innerHTML;
+}
+function safeUrl(url) {
+  if (!url) return '';
+  if (url.startsWith('data:image/')) return url;
+  if (/^https?:\/\//.test(url)) return url;
+  return '';
+}
+function safeColor(c) {
+  return /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : '#99aab5';
 }
 function escAttr(s) {
   return esc(s).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
@@ -3306,7 +3325,7 @@ function _renderMembersWithRoles(groupId, members, customRoles, isOwner) {
     memberAvatar.style.overflow = 'hidden';
     const memberAvatarImg = _avatarCache[m.username] || '';
     if (memberAvatarImg) {
-      memberAvatar.innerHTML = '<img src="' + memberAvatarImg + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      memberAvatar.innerHTML = '<img src="' + esc(safeUrl(memberAvatarImg)) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
     } else {
       memberAvatar.textContent = m.username[0].toUpperCase();
     }
@@ -3557,7 +3576,7 @@ async function generateGroupInviteLink() {
       hint.textContent = 'Klicka for att kopiera';
       el.appendChild(hint);
       el.onclick = () => {
-        navigator.clipboard.writeText(link);
+        navigator.clipboard.writeText(link).catch(() => {});
         el.textContent = '\u2705 Kopierad!';
         setTimeout(() => { el.textContent = '\ud83d\udd17 ' + link; el.appendChild(hint); }, 1500);
       };
@@ -3609,9 +3628,11 @@ async function searchUsersForInvite() {
         // Avatar
         const avatar = document.createElement('div');
         avatar.style.cssText = 'width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex-shrink:0;color:#fff;position:relative';
-        if (u.avatar) {
-          avatar.style.backgroundImage = 'url(' + u.avatar + ')';
-          avatar.style.backgroundSize = 'cover';
+        if (u.avatar && safeUrl(u.avatar)) {
+          const img = document.createElement('img');
+          img.src = safeUrl(u.avatar);
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%';
+          avatar.appendChild(img);
         } else {
           avatar.style.background = u.avatar_color || '#4f8ff7';
           avatar.textContent = u.username[0].toUpperCase();
@@ -3688,12 +3709,12 @@ async function generateAndCopyInviteLink() {
       el.style.cursor = 'pointer';
       el.textContent = link;
       el.onclick = () => {
-        navigator.clipboard.writeText(link);
+        navigator.clipboard.writeText(link).catch(() => {});
         el.textContent = 'Kopierad!';
         setTimeout(() => { el.textContent = link; }, 1500);
       };
       // Also copy immediately
-      navigator.clipboard.writeText(link);
+      navigator.clipboard.writeText(link).catch(() => {});
     }
   } catch(e) {}
 }
@@ -3851,7 +3872,7 @@ async function generateInviteCode() {
       hint.textContent = 'Klicka for att kopiera';
       el.appendChild(hint);
       el.onclick = () => {
-        navigator.clipboard.writeText(link);
+        navigator.clipboard.writeText(link).catch(() => {});
         el.textContent = '\u2705 Kopierad!';
         setTimeout(() => { el.textContent = '\ud83d\udd17 ' + link; el.appendChild(hint); }, 1500);
       };
@@ -3937,7 +3958,9 @@ let voiceSeconds = 0;
 let isMuted = false;
 let screenShareStream = null;
 let isScreenSharing = false;
-let noiseReduction = localStorage.getItem('flow-noise-reduction') !== 'off';
+let noiseReduction;
+try { noiseReduction = localStorage.getItem('flow-noise-reduction') !== 'off'; }
+catch(e) { noiseReduction = true; }
 let audioCtx = null;
 let noiseGateNode = null;
 let highpassNode = null;
@@ -4210,6 +4233,7 @@ async function createVoicePeer(peerName, initiator) {
     }
     // Audio track — existing behavior
     if (voiceAudioElements[peerName]) {
+      voiceAudioElements[peerName].pause();
       voiceAudioElements[peerName].srcObject = null;
     }
     const audio = new Audio();
@@ -4310,11 +4334,14 @@ async function toggleScreenShare() {
 
     // Add video track to all peer connections
     for (const [peer, pc] of Object.entries(voicePeers)) {
-      pc.addTrack(videoTrack, screenShareStream);
-      // Renegotiate
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
+      try {
+        pc.addTrack(videoTrack, screenShareStream);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
+      } catch(e) {
+        console.warn('Screen share negotiation failed for', peer, e);
+      }
     }
 
     // Signal others that we're sharing screen
@@ -4346,8 +4373,8 @@ function stopScreenShare() {
       if (sender) {
         pc.removeTrack(sender);
         // Renegotiate
-        pc.createOffer().then(offer => {
-          pc.setLocalDescription(offer);
+        pc.createOffer().then(async (offer) => {
+          await pc.setLocalDescription(offer);
           sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
         });
       }
@@ -4369,8 +4396,12 @@ function closeScreenShareView() {
 let micAnalyser = null;
 let micLevelInterval = null;
 let micLevelCtx = null;
-let selectedMicId = localStorage.getItem('flow-mic-id') || '';
-let selectedSpeakerId = localStorage.getItem('flow-speaker-id') || '';
+let selectedMicId;
+try { selectedMicId = localStorage.getItem('flow-mic-id') || ''; }
+catch(e) { selectedMicId = ''; }
+let selectedSpeakerId;
+try { selectedSpeakerId = localStorage.getItem('flow-speaker-id') || ''; }
+catch(e) { selectedSpeakerId = ''; }
 
 async function showAudioSettings() {
   openModal('audio-settings');
@@ -4572,6 +4603,7 @@ function handleVoiceEvent(d) {
       delete voicePeers[d.username];
     }
     if (voiceAudioElements[d.username]) {
+      voiceAudioElements[d.username].pause();
       voiceAudioElements[d.username].srcObject = null;
       delete voiceAudioElements[d.username];
     }
