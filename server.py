@@ -36,7 +36,7 @@ MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024  # 2MB per image base64
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
 CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
 ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # MUST be set via environment variable
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "onboarding@resend.com")
 
