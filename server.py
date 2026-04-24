@@ -1893,7 +1893,12 @@ class ChatHandler(BaseHTTPRequestHandler):
 
                 # Normal password login
                 stored_pw = row["password"] or ""
-                if not stored_pw or not verify_password(stored_pw, password):
+                if not stored_pw:
+                    # Legacy account without password — allow login and set password
+                    if password:
+                        db.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(password), uname))
+                        db.commit()
+                elif not verify_password(stored_pw, password):
                     time.sleep(0.5)
                     self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
                     return
