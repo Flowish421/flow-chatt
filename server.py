@@ -1956,6 +1956,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                         db.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(password), uname))
                         db.commit()
                 elif not verify_password(stored_pw, password):
+                    # Password wrong — check if it's a reset code
+                    reset_row = db.execute(
+                        "SELECT id FROM password_resets WHERE username = ? AND reset_code = ? AND used = 0",
+                        (uname, password)
+                    ).fetchone()
+                    if reset_row:
+                        db.execute("UPDATE password_resets SET used = 1 WHERE id = ?", (reset_row["id"],))
+                        db.commit()
+                        self.send_json({"ok": True, "username": row["username"], "token": row["token"], "must_change_password": True})
+                        return
                     time.sleep(0.5)
                     self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
                     return
