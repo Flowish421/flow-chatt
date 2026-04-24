@@ -56,6 +56,17 @@ DISPOSABLE_DOMAINS = {
 }
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
+def hash_password(password):
+    salt = uuid.uuid4().hex[:16]
+    hashed = hashlib.sha256((salt + password).encode()).hexdigest()
+    return salt + ":" + hashed
+
+def verify_password(stored, password):
+    if ":" not in stored:
+        return False
+    salt, hashed = stored.split(":", 1)
+    return hashlib.sha256((salt + password).encode()).hexdigest() == hashed
+
 WELCOME_TEXT = """Valkomstguide till Flow Chatt
 ---
 
@@ -516,6 +527,11 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
     except sqlite3.OperationalError:
         pass
+    # Migration: add password column to users
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
     except sqlite3.OperationalError:
@@ -529,6 +545,16 @@ def init_db():
             expires_at REAL NOT NULL,
             attempts INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
+        )
+    """)
+    # Password resets table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            reset_code TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            used INTEGER DEFAULT 0
         )
     """)
     # Seed the system room "allmant" (Guide channel, read-only instructions)
@@ -1572,6 +1598,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 for row in db.execute("SELECT author, COUNT(*) as c FROM messages GROUP BY author ORDER BY c DESC").fetchall():
                     user_stats[row["author"]] = row["c"]
                 recent = [dict(r) for r in db.execute("SELECT id, channel, author, content, created_at FROM messages ORDER BY created_at DESC LIMIT 50").fetchall()]
+                pending_resets = [dict(r) for r in db.execute("SELECT id, username, reset_code, created_at FROM password_resets WHERE used = 0").fetchall()]
             finally:
                 db.close()
             online = get_online()
@@ -1585,6 +1612,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "recent_messages": recent,
                 "online": {u: {"last_seen": info["last_seen"], "ip": info["ip"], "channel": info["channel"]} for u, info in online.items()},
                 "sse_connections": sse_count,
+                "password_resets": pending_resets,
             })
             return
 
@@ -1635,16 +1663,48 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "kicked": uname})
             return
 
-        # API: register username (fallback when SMTP not configured)
+        # API: admin generate password reset code
+        if path == "/api/admin/generate-reset":
+            if not check_admin(self.headers):
+                self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            uname = body.get("username", "")
+            if not uname:
+                self.send_json({"ok": False, "error": "username required"}, 400)
+                return
+            import random
+            reset_code = f"{random.randint(0, 99999999):08d}"
+            db = get_db()
+            try:
+                row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
+                if not row:
+                    self.send_json({"ok": False, "error": "Anvandaren finns inte"}, 404)
+                    return
+                db.execute(
+                    "INSERT INTO password_resets (id, username, reset_code, created_at) VALUES (?, ?, ?, ?)",
+                    (uuid.uuid4().hex, uname, reset_code, now())
+                )
+                db.commit()
+            finally:
+                db.close()
+            self.send_json({"ok": True, "reset_code": reset_code})
+            return
+
+        # API: register username with password
         if path == "/api/register":
             uname = body.get("username", "").strip()[:20]
+            password = body.get("password", "")
             if not uname or len(uname) < 2:
                 self.send_json({"ok": False, "error": "Namn maste vara 2-20 tecken"}, 400)
                 return
             if not re.match(r'^[a-zA-Z0-9\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6_-]{2,20}$', uname):
                 self.send_json({"ok": False, "error": "Bara bokstaver, siffror, - och _"}, 400)
                 return
+            if len(password) < 4:
+                self.send_json({"ok": False, "error": "Losenord maste vara minst 4 tecken"}, 400)
+                return
 
+            hashed_pw = hash_password(password)
             db = get_db()
             try:
                 user_count = db.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
@@ -1653,8 +1713,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                     return
                 token = uuid.uuid4().hex
                 db.execute(
-                    "INSERT INTO users (username, token, created_at) VALUES (?, ?, ?)",
-                    (uname, token, now())
+                    "INSERT INTO users (username, token, password, created_at) VALUES (?, ?, ?, ?)",
+                    (uname, token, hashed_pw, now())
                 )
                 db.commit()
             except sqlite3.IntegrityError:
@@ -1796,26 +1856,108 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "username": uname, "token": token})
             return
 
-        # API: login with username + email
+        # API: login with username + password
         if path == "/api/login":
             uname = body.get("username", "").strip()[:20]
-            email = body.get("email", "").strip().lower()[:254]
-            if not uname or not email:
+            password = body.get("password", "")
+            reset_code = body.get("reset_code", "").strip()
+            if not uname:
                 self.send_json({"ok": False, "error": "Fyll i alla falt"}, 400)
                 return
             db = get_db()
             try:
                 row = db.execute(
-                    "SELECT username, token FROM users WHERE username = ? AND email = ?",
-                    (uname, email)
+                    "SELECT username, token, password FROM users WHERE username = ?",
+                    (uname,)
                 ).fetchone()
+                if not row:
+                    time.sleep(0.5)
+                    self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
+                    return
+
+                # Check if logging in with a reset code
+                if reset_code:
+                    reset_row = db.execute(
+                        "SELECT id FROM password_resets WHERE username = ? AND reset_code = ? AND used = 0",
+                        (uname, reset_code)
+                    ).fetchone()
+                    if reset_row:
+                        db.execute("UPDATE password_resets SET used = 1 WHERE id = ?", (reset_row["id"],))
+                        db.commit()
+                        self.send_json({"ok": True, "username": row["username"], "token": row["token"], "must_change_password": True})
+                        return
+                    else:
+                        time.sleep(0.5)
+                        self.send_json({"ok": False, "error": "Ogiltig aterstallningskod"}, 401)
+                        return
+
+                # Normal password login
+                stored_pw = row["password"] or ""
+                if not stored_pw or not verify_password(stored_pw, password):
+                    time.sleep(0.5)
+                    self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
+                    return
+                self.send_json({"ok": True, "username": row["username"], "token": row["token"]})
             finally:
                 db.close()
-            if row:
-                self.send_json({"ok": True, "username": row["username"], "token": row["token"]})
-            else:
-                time.sleep(0.5)  # slow down brute force
-                self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller e-post"}, 401)
+            return
+
+        # API: change password
+        if path == "/api/change-password":
+            uname = body.get("username", "").strip()
+            token = body.get("token", "").strip()
+            old_password = body.get("old_password", "")
+            new_password = body.get("new_password", "")
+            if not uname or not token or not new_password:
+                self.send_json({"ok": False, "error": "Alla falt kravs"}, 400)
+                return
+            if len(new_password) < 4:
+                self.send_json({"ok": False, "error": "Losenord maste vara minst 4 tecken"}, 400)
+                return
+            db = get_db()
+            try:
+                row = db.execute(
+                    "SELECT username, password FROM users WHERE username = ? AND token = ?",
+                    (uname, token)
+                ).fetchone()
+                if not row:
+                    self.send_json({"ok": False, "error": "Ogiltig token"}, 401)
+                    return
+                stored_pw = row["password"] or ""
+                # If old password exists and old_password provided, verify it
+                if stored_pw and old_password:
+                    if not verify_password(stored_pw, old_password):
+                        self.send_json({"ok": False, "error": "Fel nuvarande losenord"}, 401)
+                        return
+                hashed_new = hash_password(new_password)
+                db.execute("UPDATE users SET password = ? WHERE username = ?", (hashed_new, uname))
+                db.commit()
+            finally:
+                db.close()
+            self.send_json({"ok": True})
+            return
+
+        # API: request password reset
+        if path == "/api/request-reset":
+            uname = body.get("username", "").strip()
+            if not uname:
+                self.send_json({"ok": False, "error": "Anvandarnamn kravs"}, 400)
+                return
+            db = get_db()
+            try:
+                row = db.execute("SELECT username FROM users WHERE username = ?", (uname,)).fetchone()
+                if row:
+                    import random
+                    reset_code = f"{random.randint(0, 99999999):08d}"
+                    db.execute(
+                        "INSERT INTO password_resets (id, username, reset_code, created_at) VALUES (?, ?, ?, ?)",
+                        (uuid.uuid4().hex, uname, reset_code, now())
+                    )
+                    db.commit()
+            finally:
+                db.close()
+            # Always return success to not reveal if user exists
+            self.send_json({"ok": True, "message": "Begaran skickad till admin"})
             return
 
         # API: verify token
