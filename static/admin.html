@@ -120,6 +120,9 @@ tr:hover td { background: var(--elevated); }
   <h2>Kanaler</h2>
   <table id="t-channels"><thead><tr><th>Namn</th><th>Visningsnamn</th><th>Skapad av</th><th>Skapad</th></tr></thead><tbody></tbody></table>
 
+  <h2>Losenordsaterstallningar</h2>
+  <table id="t-resets"><thead><tr><th>Anvandare</th><th>Resetkod</th><th>Skapad</th><th>Status</th></tr></thead><tbody></tbody></table>
+
   <h2>Senaste meddelanden</h2>
   <table id="t-msgs"><thead><tr><th>Tid</th><th>Kanal</th><th>Fran</th><th>Meddelande</th></tr></thead><tbody></tbody></table>
 </div>
@@ -216,6 +219,7 @@ async function loadDashboard() {
         <td>${msgs}</td>
         <td>${isOn ? '<span style="color:var(--green)">Online</span>' : '<span style="color:var(--dim)">Offline</span>'}</td>
         <td>
+          <button class="btn-sm" onclick="generateReset('${escAttr(u.username)}')">Resetkod</button>
           <button class="btn-sm" onclick="kickUser('${escAttr(u.username)}')">Kicka</button>
           <button class="btn-sm danger" onclick="deleteUser('${escAttr(u.username)}')">Radera</button>
         </td>
@@ -230,6 +234,20 @@ async function loadDashboard() {
       <td>${esc(c.created_by || '?')}</td>
       <td class="timestamp">${fmtTime(c.created_at)}</td>
     </tr>`).join('');
+
+    // Password resets
+    const rTbody = document.querySelector('#t-resets tbody');
+    const resets = res.password_resets || [];
+    if (resets.length === 0) {
+      rTbody.innerHTML = '<tr><td colspan="4" style="color:var(--dim)">Inga aterstallningar</td></tr>';
+    } else {
+      rTbody.innerHTML = resets.map(r => `<tr>
+        <td>${esc(r.username)}</td>
+        <td style="font-size:16px;letter-spacing:2px;color:var(--amber);font-weight:700">${esc(r.reset_code)}</td>
+        <td class="timestamp">${fmtTime(r.created_at)}</td>
+        <td>${r.used ? '<span style="color:var(--dim)">Anvand</span>' : '<span style="color:var(--green)">Aktiv</span>'}</td>
+      </tr>`).join('');
+    }
 
     // Recent messages
     const mTbody = document.querySelector('#t-msgs tbody');
@@ -252,6 +270,22 @@ async function kickUser(name) {
     headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
     body: JSON.stringify({ username: name }),
   });
+  loadDashboard();
+}
+
+async function generateReset(name) {
+  try {
+    const res = await fetch('/api/admin/generate-reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+      body: JSON.stringify({ username: name }),
+    }).then(r => r.json());
+    if (res.ok) {
+      alert('Resetkod for ' + name + ':\n\n' + res.reset_code + '\n\nGe denna kod till anvandaren. De loggar in med koden istallet for losenord.');
+    } else {
+      alert(res.error || 'Kunde inte generera kod');
+    }
+  } catch(e) { alert('Serverfel'); }
   loadDashboard();
 }
 
