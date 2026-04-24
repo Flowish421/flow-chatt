@@ -616,41 +616,11 @@ body {
 <div id="login-overlay">
   <div id="login-box">
     <h1>Flow Chatt</h1>
-
-    <!-- Step 1: Email + Username -->
-    <div id="reg-step-1">
-      <p>Skapa konto for att borja chatta</p>
-      <input id="reg-email" type="email" placeholder="Din e-postadress..." maxlength="100" autocomplete="email" oninput="validateNick()">
-      <input id="reg-username" type="text" placeholder="Valj ett nickname..." maxlength="20" autocomplete="off" oninput="validateNick()">
-      <div id="login-error"></div>
-      <button id="reg-send-btn" onclick="sendVerificationCode()" disabled>Skicka verifieringskod</button>
-    </div>
-
-    <!-- Step 2: Enter code -->
-    <div id="reg-step-2" style="display:none">
-      <p>Ange koden vi skickade till <span id="reg-email-display"></span></p>
-      <input id="reg-code" type="text" placeholder="000000" maxlength="6" autocomplete="one-time-code"
-        style="text-align:center;font-size:24px;letter-spacing:8px"
-        oninput="formatCodeInput(this)">
-      <div id="code-error"></div>
-      <button id="reg-verify-btn" onclick="verifyCode()">Verifiera</button>
-      <button onclick="showStep1()" style="background:none;border:none;color:var(--text-muted);font-family:var(--font-mono);font-size:11px;cursor:pointer;margin-top:8px">Tillbaka</button>
-    </div>
-
-    <!-- Existing user login (small link at bottom) -->
-    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-      <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">Har redan konto?</span>
-      <button onclick="showLoginForm()" style="background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:11px;cursor:pointer">Logga in</button>
-    </div>
-
-    <!-- Login form (hidden by default) -->
-    <div id="login-form" style="display:none">
-      <input id="login-username" type="text" placeholder="Ditt nickname..." maxlength="20">
-      <input id="login-email-verify" type="email" placeholder="Din e-postadress..." maxlength="100">
-      <div id="login-form-error"></div>
-      <button onclick="doExistingLogin()">Logga in</button>
-      <button onclick="showStep1()" style="background:none;border:none;color:var(--text-muted);font-family:var(--font-mono);font-size:11px;cursor:pointer;margin-top:8px">Skapa konto</button>
-    </div>
+    <p>Valj ett nickname for att borja chatta</p>
+    <input id="login-input" type="text" placeholder="Ditt nickname..." maxlength="20" autocomplete="off"
+      onkeydown="if(event.key==='Enter')doLogin()" oninput="validateNick()">
+    <div id="login-error"></div>
+    <button id="login-btn" onclick="doLogin()" disabled>Starta</button>
   </div>
 </div>
 
@@ -1030,19 +1000,17 @@ async function init() {
     console.log('Token invalid, showing login');
   }
   // Show login screen
-  document.getElementById('reg-email').focus();
+  document.getElementById('login-input').focus();
 }
 
 let checkTimer = null;
 function validateNick() {
-  const input = document.getElementById('reg-username');
-  const email = document.getElementById('reg-email').value.trim();
-  const btn = document.getElementById('reg-send-btn');
+  const input = document.getElementById('login-input');
+  const btn = document.getElementById('login-btn');
   const err = document.getElementById('login-error');
   const v = input.value.trim();
 
   btn.disabled = true;
-  let validNick = false;
 
   if (v.length === 0) { err.textContent = ''; return; }
   if (v.length < 2) { err.textContent = 'Minst 2 tecken'; err.style.color = 'var(--red)'; return; }
@@ -1056,7 +1024,6 @@ function validateNick() {
   err.textContent = 'Kollar...';
   err.style.color = 'var(--text-muted)';
 
-  // Debounce server check
   clearTimeout(checkTimer);
   checkTimer = setTimeout(async () => {
     try {
@@ -1065,95 +1032,39 @@ function validateNick() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: v }),
       }).then(r => r.json());
-      // Only update if input hasn't changed
       if (input.value.trim() !== v) return;
       if (res.available) {
         err.textContent = 'Tillgangligt!';
         err.style.color = 'var(--green)';
-        validNick = true;
+        btn.disabled = false;
       } else {
         err.textContent = 'Namnet ar redan taget';
         err.style.color = 'var(--red)';
         btn.disabled = true;
-        return;
       }
     } catch(e) {
       err.textContent = '';
-      validNick = true; // Allow attempt, server will reject if taken
+      btn.disabled = false;
     }
-    btn.disabled = !(validNick && email.includes('@'));
   }, 400);
 }
 
-function showStep1() {
-  document.getElementById('reg-step-1').style.display = '';
-  document.getElementById('reg-step-2').style.display = 'none';
-  document.getElementById('login-form').style.display = 'none';
-}
-
-function showLoginForm() {
-  document.getElementById('reg-step-1').style.display = 'none';
-  document.getElementById('reg-step-2').style.display = 'none';
-  document.getElementById('login-form').style.display = '';
-}
-
-function formatCodeInput(el) {
-  el.value = el.value.replace(/\D/g, '').slice(0, 6);
-  if (el.value.length === 6) {
-    verifyCode();
-  }
-}
-
-async function sendVerificationCode() {
-  const email = document.getElementById('reg-email').value.trim();
-  const nick = document.getElementById('reg-username').value.trim();
+async function doLogin() {
+  const input = document.getElementById('login-input');
   const err = document.getElementById('login-error');
-  err.textContent = '';
+  const btn = document.getElementById('login-btn');
+  const v = input.value.trim();
+  if (v.length < 2 || v.length > 20) return;
 
-  if (!email || !nick) { err.textContent = 'Fyll i alla falt'; err.style.color = 'var(--red)'; return; }
-
-  const btn = document.getElementById('reg-send-btn');
   btn.disabled = true;
-  btn.textContent = 'Skickar...';
-
-  try {
-    const res = await fetch('/api/register/send-code', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, username: nick }),
-    }).then(r => r.json());
-
-    if (res.ok) {
-      document.getElementById('reg-email-display').textContent = email;
-      document.getElementById('reg-step-1').style.display = 'none';
-      document.getElementById('reg-step-2').style.display = '';
-      document.getElementById('reg-code').focus();
-    } else {
-      err.textContent = res.error || 'Kunde inte skicka kod';
-      err.style.color = 'var(--red)';
-    }
-  } catch(e) {
-    err.textContent = 'Serverfel';
-    err.style.color = 'var(--red)';
-  }
-  btn.disabled = false;
-  btn.textContent = 'Skicka verifieringskod';
-}
-
-async function verifyCode() {
-  const email = document.getElementById('reg-email').value.trim();
-  const code = document.getElementById('reg-code').value.trim();
-  const nick = document.getElementById('reg-username').value.trim();
-  const err = document.getElementById('code-error');
+  btn.textContent = 'Laddar...';
   err.textContent = '';
 
-  if (!code || code.length !== 6) { err.textContent = 'Ange 6-siffrig kod'; err.style.color = 'var(--red)'; return; }
-
   try {
-    const res = await fetch('/api/register/verify', {
+    const res = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, code, username: nick }),
+      body: JSON.stringify({ username: v }),
     }).then(r => r.json());
 
     if (res.ok) {
@@ -1164,44 +1075,16 @@ async function verifyCode() {
       document.getElementById('login-overlay').classList.add('hidden');
       startChat();
     } else {
-      err.textContent = res.error || 'Fel kod';
+      err.textContent = res.error || 'Kunde inte registrera';
       err.style.color = 'var(--red)';
+      btn.disabled = false;
+      btn.textContent = 'Starta';
     }
   } catch(e) {
-    err.textContent = 'Serverfel';
+    err.textContent = 'Serverfel, forsok igen';
     err.style.color = 'var(--red)';
-  }
-}
-
-async function doExistingLogin() {
-  const uname = document.getElementById('login-username').value.trim();
-  const email = document.getElementById('login-email-verify').value.trim();
-  const err = document.getElementById('login-form-error');
-  err.textContent = '';
-
-  if (!uname || !email) { err.textContent = 'Fyll i alla falt'; err.style.color = 'var(--red)'; return; }
-
-  try {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: uname, email }),
-    }).then(r => r.json());
-
-    if (res.ok) {
-      username = res.username;
-      userToken = res.token;
-      localStorage.setItem('cortex-chat-user', username);
-      localStorage.setItem('cortex-chat-token', userToken);
-      document.getElementById('login-overlay').classList.add('hidden');
-      startChat();
-    } else {
-      err.textContent = res.error || 'Felaktiga uppgifter';
-      err.style.color = 'var(--red)';
-    }
-  } catch(e) {
-    err.textContent = 'Serverfel';
-    err.style.color = 'var(--red)';
+    btn.disabled = false;
+    btn.textContent = 'Starta';
   }
 }
 

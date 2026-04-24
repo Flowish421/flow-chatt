@@ -1637,9 +1637,6 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         # API: register username (fallback when SMTP not configured)
         if path == "/api/register":
-            if RESEND_API_KEY:
-                self.send_json({"ok": False, "error": "use /api/register/send-code"}, 400)
-                return
             uname = body.get("username", "").strip()[:20]
             if not uname or len(uname) < 2:
                 self.send_json({"ok": False, "error": "Namn maste vara 2-20 tecken"}, 400)
