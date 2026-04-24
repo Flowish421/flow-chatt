@@ -67,63 +67,7 @@ def verify_password(stored, password):
     salt, hashed = stored.split(":", 1)
     return hashlib.sha256((salt + password).encode()).hexdigest() == hashed
 
-WELCOME_TEXT = """Valkomstguide till Quiver
----
-
-1. Vad ar Quiver?
-Quiver ar en chattapp i Discord-stil dar du kan skapa grupper, text- och voice-kanaler, bjuda in vanner och chatta i realtid.
-
----
-
-2. Skapa en grupp
-Klicka pa "+ Ny grupp" i sidofaltet. Valj ett namn, en beskrivning och om gruppen ska vara offentlig eller privat. Du blir automatiskt agare av gruppen.
-
----
-
-3. Text- och voice-kanaler
-Inne i din grupp kan du skapa kanaler:
-- Textkanal: for vanlig chatt och meddelandehistorik.
-- Voice-kanal: for roststamtal i realtid.
-Klicka pa kugghjulet eller "+ Kanal" for att lagga till nya kanaler.
-
----
-
-4. Bjud in vanner
-Du kan bjuda in vanner pa tva satt:
-- Direktinbjudan: skriv deras anvandarnamn sa laggs de till direkt.
-- Inbjudningslank: generera en kod som du delar. Koden kan anvandas ett bestamt antal ganger.
-
----
-
-5. Roller: agare, admin, medlem
-- Agare: full kontroll over gruppen, kan ta bort den, andra roller och hantera kanaler.
-- Admin: kan skapa/ta bort kanaler, kicka medlemmar och hantera forfragningar.
-- Medlem: kan lasa och skriva i kanaler de har tillgang till.
-Agaren kan aven skapa egna roller med olika farger och behorighetskrav.
-
----
-
-6. Voice chat
-Klicka pa en voice-kanal for att ga med i samtalet. Du ser vilka som ar med i kanalen. Klicka igen for att lamna.
-
----
-
-7. Brusreducering
-I ljud-installningarna kan du sla pa och av brusreducering for att filtrera bort bakgrundsljud under voice-samtal.
-
----
-
-8. Emojis och reaktioner
-Klicka pa emoji-knappen i chattfaltet for att lagga till emojis i ditt meddelande. Du kan aven reagera pa andras meddelanden genom att klicka + bredvid ett meddelande.
-
----
-
-9. Privata kanaler och rollkrav
-Kanaler kan ha rollkrav sa att bara anvandare med en viss roll far skriva. Agare och admins har alltid tillgang. Privata grupper kraver inbjudan for att ga med.
-
----
-
-Det har rummet ar skrivskyddat."""
+WELCOME_TEXT = """Valkommen till Quiver! Borja chatta direkt har, eller skapa en grupp med "+ Skapa grupp" i sidofaltet."""
 
 # --- Membership cache (in-memory for fast SSE filtering) ---
 membership_cache = {}  # room_name -> set(username)
@@ -287,7 +231,8 @@ def check_room_access(db, room_name, username=None):
         member = db.execute("SELECT role FROM room_members WHERE room = ? AND username = ?", (room_name, username)).fetchone()
         if member:
             return room, "owner" if member["role"] == "owner" else "write"
-        return room, "read"
+        # All logged-in users can write in public non-group channels
+        return room, "write"
     if vis == "private":
         if not username:
             return None, None
@@ -568,13 +513,13 @@ def init_db():
             used INTEGER DEFAULT 0
         )
     """)
-    # Seed the system room "allmant" (Guide channel, read-only instructions)
+    # Seed the global chat room "allmant" (public, writable by all)
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at)
-        VALUES ('allmant', 'Guide', 'Hur man anvander Quiver', 'system', 'system', 'system', ?)
+        VALUES ('allmant', 'Allmant', 'Oppen chatt for alla', 'public', 'system', 'system', ?)
     """, (now(),))
-    # Update display_name if it was previously 'Allmant' (migration for existing DBs)
-    conn.execute("UPDATE channels SET display_name = 'Guide', topic = 'Hur man anvander Quiver' WHERE name = 'allmant' AND display_name = 'Allmant'")
+    # Migration: convert old system/Guide channel to writable public channel
+    conn.execute("UPDATE channels SET display_name = 'Allmant', topic = 'Oppen chatt for alla', visibility = 'public' WHERE name = 'allmant' AND visibility = 'system'")
     # Seed welcome message in allmant if empty
     existing = conn.execute("SELECT id FROM messages WHERE channel = 'allmant' LIMIT 1").fetchone()
     if not existing:
@@ -1511,9 +1456,21 @@ class ChatHandler(BaseHTTPRequestHandler):
                     g["member_avatars"] = {mr["username"]: (mr["avatar"] or "") for mr in member_rows if mr["avatar"]}
                     groups.append(g)
 
-                # System channels (no group, visibility='system')
-                system_rows = db.execute("SELECT * FROM channels WHERE visibility = 'system' AND (group_id IS NULL OR group_id = '') ORDER BY created_at").fetchall()
-                system_channels = [dict(r) for r in system_rows]
+                # Global channels (no group — pinned at top of sidebar)
+                system_rows = db.execute("SELECT * FROM channels WHERE (group_id IS NULL OR group_id = '') ORDER BY created_at").fetchall()
+                system_channels = []
+                if authenticated_user:
+                    user_global_rooms = {m["room"]: m["role"] for m in db.execute("SELECT room, role FROM room_members WHERE username = ?", (authenticated_user,)).fetchall()}
+                else:
+                    user_global_rooms = {}
+                for r in system_rows:
+                    sc = dict(r)
+                    vis = sc.get("visibility", "public")
+                    sc["is_member"] = sc["name"] in user_global_rooms or vis == "public"
+                    sc["user_role"] = user_global_rooms.get(sc["name"], "member" if vis == "public" else None)
+                    if vis == "private" and not sc["name"] in user_global_rooms:
+                        continue  # Hide private channels user isn't in
+                    system_channels.append(sc)
 
                 # Compute online usernames for per-group online counts
                 online_info = get_online()
