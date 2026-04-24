@@ -710,7 +710,7 @@ admin_sessions = set()
 
 admin_login_attempts = {}  # ip -> [timestamps] for brute-force protection
 admin_login_lock = threading.Lock()
-MAX_ADMIN_LOGIN_ATTEMPTS = 5  # per 15 minutes
+MAX_ADMIN_LOGIN_ATTEMPTS = 20  # per 15 minutes
 
 
 def check_admin_lockout(ip):
