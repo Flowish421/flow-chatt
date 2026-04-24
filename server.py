@@ -1550,6 +1550,38 @@ class ChatHandler(BaseHTTPRequestHandler):
                 db.close()
             return
 
+        # API: list registered users (for invite search)
+        if path == "/api/users":
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            search = params.get("q", [None])[0]
+            if not req_user or not req_token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                if search:
+                    rows = db.execute("SELECT username, avatar_color, avatar, bio FROM users WHERE username LIKE ? LIMIT 50", ('%' + search + '%',)).fetchall()
+                else:
+                    rows = db.execute("SELECT username, avatar_color, avatar, bio FROM users ORDER BY username LIMIT 50").fetchall()
+            finally:
+                db.close()
+            users = []
+            for r in rows:
+                users.append({"username": r["username"], "avatar_color": r["avatar_color"] or "#4f8ff7", "avatar": r["avatar"] or "", "bio": r["bio"] or ""})
+            with sse_lock:
+                online_names = set(c[2] for c in sse_clients if len(c) > 2 and c[2] != "anonymous")
+            with ws_lock:
+                online_names |= set(c.username for c in ws_clients if c.alive and c.username != "anonymous")
+            for u in users:
+                u["online"] = u["username"] in online_names
+            self.send_json({"ok": True, "users": users})
+            return
+
         self.send_error(404)
 
     def do_POST(self):

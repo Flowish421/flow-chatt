@@ -516,7 +516,7 @@ body {
   .react-add-btn { opacity: 1 !important; }
 
   /* Modals */
-  #create-group-modal .modal-content, #create-channel-modal .modal-content, #settings-modal .modal-content, #group-settings-modal .modal-content, #channel-settings-modal .modal-content, #audio-settings .modal-content {
+  #create-group-modal .modal-content, #create-channel-modal .modal-content, #settings-modal .modal-content, #group-settings-modal .modal-content, #channel-settings-modal .modal-content, #audio-settings .modal-content, #invite-modal .modal-content {
     width: 95% !important; max-width: 95% !important;
     max-height: 85vh; overflow-y: auto;
   }
@@ -622,6 +622,9 @@ body {
 #send-btn:active { transform: scale(0.95); }
 #new-channel-btn { transition: border-color 0.15s ease, color 0.15s ease; }
 .header-btn { transition: color 0.15s ease, border-color 0.15s ease; }
+#screen-share-container { transition: box-shadow 0.2s; }
+#screen-share-container:hover { box-shadow: 0 8px 40px rgba(88,166,255,0.15); }
+#screen-btn.active { color: var(--green) !important; border-color: var(--green) !important; background: rgba(63,185,80,0.1) !important; }
 </style>
 </head>
 <body>
@@ -811,6 +814,7 @@ body {
     <div id="gs-requests" style="margin-bottom:16px"></div>
     <div id="gs-roles" style="margin-bottom:16px"></div>
     <h3 style="font-family:var(--font-mono);font-size:12px;color:var(--accent);margin-bottom:10px;letter-spacing:1px">&#128233; Bjud in</h3>
+    <button onclick="showInviteModal(document.getElementById('gs-group-id').value)" style="width:100%;background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:13px;padding:10px;cursor:pointer;margin-bottom:12px">Bjud in vanner</button>
     <div style="display:flex;gap:6px;margin-bottom:14px">
       <input id="gs-invite-name" type="text" placeholder="Skriv anvandarnamn..." style="flex:1;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;padding:10px 12px;outline:none">
       <button onclick="groupInviteByName()" style="background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:700;font-size:13px;padding:10px 18px;cursor:pointer;white-space:nowrap">&#10133; Bjud in</button>
@@ -822,6 +826,26 @@ body {
       <button onclick="leaveCurrentGroup()" style="background:none;border:1px solid var(--amber);border-radius:6px;color:var(--amber);font-family:var(--font-mono);font-size:12px;padding:8px 12px;cursor:pointer">Lamna grupp</button>
       <button onclick="deleteCurrentGroup()" id="gs-delete-btn" style="background:none;border:1px solid var(--red);border-radius:6px;color:var(--red);font-family:var(--font-mono);font-size:12px;padding:8px 12px;cursor:pointer">Radera grupp</button>
     </div>
+  </div>
+</div>
+
+<!-- Invite Friends Modal -->
+<div id="invite-modal" class="modal-backdrop" onclick="if(event.target===this)closeModal('invite-modal')">
+  <div class="modal-content" style="width:400px;max-height:80vh;display:flex;flex-direction:column">
+    <h2 style="font-family:var(--font-mono);font-size:14px;color:var(--accent);margin-bottom:12px">Bjud in vanner</h2>
+    <input type="hidden" id="inv-group-id">
+    <div style="margin-bottom:12px">
+      <input type="text" id="inv-search" placeholder="Sok anvandarnamn..." oninput="searchUsersForInvite()" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:13px;padding:10px 14px;outline:none">
+    </div>
+    <div id="inv-user-list" style="flex:1;overflow-y:auto;max-height:300px;margin-bottom:12px"></div>
+    <div style="border-top:1px solid var(--border);padding-top:12px">
+      <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Eller dela en inbjudningslank</div>
+      <div style="display:flex;gap:8px">
+        <button onclick="generateAndCopyInviteLink()" style="flex:1;background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:10px;cursor:pointer">Skapa inbjudningslank</button>
+      </div>
+      <div id="inv-link-result" style="display:none;margin-top:8px;font-family:var(--font-mono);font-size:11px;word-break:break-all"></div>
+    </div>
+    <button onclick="closeModal('invite-modal')" style="margin-top:12px;width:100%;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:10px;cursor:pointer">Stang</button>
   </div>
 </div>
 
@@ -875,6 +899,15 @@ body {
   <div class="ep-grid" id="ep-grid"></div>
 </div>
 
+<!-- Screen Share Viewer -->
+<div id="screen-share-container" style="display:none;position:fixed;top:60px;right:20px;z-index:350;background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.4);resize:both;width:640px;max-width:80vw">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg-elevated);border-bottom:1px solid var(--border)">
+    <span id="screen-share-label" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">Skarmdelning</span>
+    <button onclick="closeScreenShareView()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">&#10005;</button>
+  </div>
+  <video id="screen-share-video" autoplay playsinline style="width:100%;display:block;background:#000"></video>
+</div>
+
 <!-- Voice Channel Overlay (bottom bar) -->
 <div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--green);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(52,211,153,0.2);align-items:center;gap:16px">
   <div style="font-size:20px">&#128266;</div>
@@ -883,6 +916,7 @@ body {
     <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="call-timer">00:00</div>
   </div>
   <button id="mute-btn" onclick="toggleMute()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Mute">&#127897;</button>
+  <button id="screen-btn" onclick="toggleScreenShare()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Dela skarm">&#128187;</button>
   <button onclick="showAudioSettings()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Ljud-installningar">&#9881;</button>
   <button onclick="hangupCall()" style="background:var(--red);border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:#000" title="Lamna">&#10005;</button>
 </div>
@@ -1723,7 +1757,7 @@ function makeGroupSection(group) {
   const header = document.createElement('div');
   header.className = 'group-header';
   header.addEventListener('click', (e) => {
-    if (e.target.closest('.group-add-btn') || e.target.closest('.group-settings-btn')) return;
+    if (e.target.closest('.group-add-btn') || e.target.closest('.group-settings-btn') || e.target.closest('.group-invite-btn')) return;
     toggleGroupCollapse(group.id);
   });
 
@@ -1749,6 +1783,17 @@ function makeGroupSection(group) {
     gearBtn.title = 'Grupp-installningar';
     gearBtn.addEventListener('click', (e) => { e.stopPropagation(); showGroupSettings(group.id); });
     header.appendChild(gearBtn);
+  }
+
+  // Invite button for owner/admin
+  if (group.user_role === 'owner' || group.user_role === 'admin') {
+    const invBtn = document.createElement('button');
+    invBtn.className = 'group-settings-btn group-invite-btn';
+    invBtn.innerHTML = '&#128101;';
+    invBtn.title = 'Bjud in vanner';
+    invBtn.style.cssText = 'font-size:12px';
+    invBtn.addEventListener('click', (e) => { e.stopPropagation(); showInviteModal(group.id); });
+    header.appendChild(invBtn);
   }
 
   // [+] button for owner/admin
@@ -2468,6 +2513,12 @@ function handleEvent(d) {
     handleCallSignal(d);
     return;
   }
+  // Screen share stop signal
+  if (d.type === 'screen_share_stop' && d.from !== username) {
+    document.getElementById('screen-share-container').style.display = 'none';
+    document.getElementById('screen-share-video').srcObject = null;
+    return;
+  }
   // Voice channel events
   if (d.event_type === 'voice_joined' || d.event_type === 'voice_left') {
     handleVoiceEvent(d);
@@ -2898,7 +2949,7 @@ document.addEventListener('keydown', (e) => {
     document.getElementById('lightbox').classList.remove('on');
     const picker = document.getElementById('emoji-picker');
     if (picker.classList.contains('on')) { picker.classList.remove('on'); emojiPickerMode = null; }
-    ['create-group-modal', 'create-channel-modal', 'group-settings-modal', 'channel-settings-modal', 'settings-modal', 'audio-settings'].forEach(id => {
+    ['create-group-modal', 'create-channel-modal', 'group-settings-modal', 'channel-settings-modal', 'settings-modal', 'audio-settings', 'invite-modal'].forEach(id => {
       const el = document.getElementById(id);
       if (el && (el.classList.contains('open') || el.style.display === 'flex')) closeModal(id);
     });
@@ -3514,6 +3565,139 @@ async function generateGroupInviteLink() {
   } catch(e) {}
 }
 
+let _inviteSearchTimeout = null;
+async function showInviteModal(groupId) {
+  document.getElementById('inv-group-id').value = groupId;
+  document.getElementById('inv-search').value = '';
+  document.getElementById('inv-link-result').style.display = 'none';
+  openModal('invite-modal');
+  searchUsersForInvite();
+  document.getElementById('inv-search').focus();
+}
+
+async function searchUsersForInvite() {
+  clearTimeout(_inviteSearchTimeout);
+  _inviteSearchTimeout = setTimeout(async () => {
+    const q = document.getElementById('inv-search').value.trim();
+    const groupId = document.getElementById('inv-group-id').value;
+    try {
+      const url = '/api/users?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken) + (q ? '&q=' + encodeURIComponent(q) : '');
+      const data = await fetch(url).then(r => r.json());
+      if (!data.ok) return;
+
+      // Get current group members to exclude
+      const group = groupData.find(g => g.id === groupId);
+      const memberNames = new Set();
+      if (group && group.member_colors) {
+        Object.keys(group.member_colors).forEach(n => memberNames.add(n));
+      }
+
+      const list = document.getElementById('inv-user-list');
+      list.innerHTML = '';
+      const users = (data.users || []).filter(u => u.username !== username);
+      if (!users.length) {
+        list.innerHTML = '<div style="padding:20px;text-align:center;font-family:var(--font-mono);font-size:12px;color:var(--text-muted)">Inga anvandare hittade</div>';
+        return;
+      }
+      users.forEach(u => {
+        const isMember = memberNames.has(u.username);
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;transition:background 0.15s';
+        row.onmouseenter = () => row.style.background = 'rgba(88,166,255,0.08)';
+        row.onmouseleave = () => row.style.background = '';
+
+        // Avatar
+        const avatar = document.createElement('div');
+        avatar.style.cssText = 'width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex-shrink:0;color:#fff;position:relative';
+        if (u.avatar) {
+          avatar.style.backgroundImage = 'url(' + u.avatar + ')';
+          avatar.style.backgroundSize = 'cover';
+        } else {
+          avatar.style.background = u.avatar_color || '#4f8ff7';
+          avatar.textContent = u.username[0].toUpperCase();
+        }
+        // Online dot
+        if (u.online) {
+          const dot = document.createElement('div');
+          dot.style.cssText = 'position:absolute;bottom:0;right:0;width:10px;height:10px;border-radius:50%;background:#3fb950;border:2px solid var(--bg-surface)';
+          avatar.appendChild(dot);
+        }
+        row.appendChild(avatar);
+
+        // Name + bio
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;overflow:hidden';
+        info.innerHTML = '<div style="font-family:var(--font-mono);font-size:13px;color:var(--text-primary)">' + esc(u.username) + '</div>' +
+          (u.bio ? '<div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.bio) + '</div>' : '');
+        row.appendChild(info);
+
+        // Invite button or "Already member" badge
+        if (isMember) {
+          const badge = document.createElement('span');
+          badge.style.cssText = 'font-family:var(--font-mono);font-size:10px;color:var(--text-muted);padding:4px 10px;border:1px solid var(--border);border-radius:6px';
+          badge.textContent = 'Medlem';
+          row.appendChild(badge);
+        } else {
+          const btn = document.createElement('button');
+          btn.style.cssText = 'background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:11px;padding:6px 14px;cursor:pointer;white-space:nowrap';
+          btn.textContent = 'Bjud in';
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+              const res = await fetch('/api/group/' + encodeURIComponent(groupId) + '/invite', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ author: username, token: userToken, username: u.username }),
+              }).then(r => r.json());
+              if (res.ok) {
+                btn.textContent = 'Inbjuden!';
+                btn.style.background = 'var(--green)';
+                memberNames.add(u.username);
+              } else {
+                btn.textContent = res.error || 'Fel';
+                btn.style.background = 'var(--red)';
+              }
+            } catch(err) {
+              btn.textContent = 'Fel';
+              btn.style.background = 'var(--red)';
+            }
+          };
+          row.appendChild(btn);
+        }
+        list.appendChild(row);
+      });
+    } catch(e) {}
+  }, 200);
+}
+
+async function generateAndCopyInviteLink() {
+  const groupId = document.getElementById('inv-group-id').value;
+  try {
+    const res = await fetch('/api/group/' + encodeURIComponent(groupId) + '/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, generate_code: true, uses: 25 }),
+    }).then(r => r.json());
+    if (res.ok) {
+      const link = location.origin + '/?invite=' + res.code + '&group=' + groupId;
+      const el = document.getElementById('inv-link-result');
+      el.style.display = 'block';
+      el.style.color = 'var(--green)';
+      el.style.cursor = 'pointer';
+      el.textContent = link;
+      el.onclick = () => {
+        navigator.clipboard.writeText(link);
+        el.textContent = 'Kopierad!';
+        setTimeout(() => { el.textContent = link; }, 1500);
+      };
+      // Also copy immediately
+      navigator.clipboard.writeText(link);
+    }
+  } catch(e) {}
+}
+
 async function leaveCurrentGroup() {
   const groupId = document.getElementById('gs-group-id').value;
   if (!confirm('Lamna gruppen?')) return;
@@ -3751,6 +3935,8 @@ let processedStream = null;  // stream after audio processing pipeline
 let voiceTimer = null;
 let voiceSeconds = 0;
 let isMuted = false;
+let screenShareStream = null;
+let isScreenSharing = false;
 let noiseReduction = localStorage.getItem('flow-noise-reduction') !== 'off';
 let audioCtx = null;
 let noiseGateNode = null;
@@ -3962,6 +4148,8 @@ async function leaveVoiceChannel() {
 }
 
 function cleanupVoice() {
+  // Stop screen sharing if active
+  if (isScreenSharing) stopScreenShare();
   stopMicLevel();
   for (const [peer, pc] of Object.entries(voicePeers)) {
     pc.close();
@@ -4009,7 +4197,18 @@ async function createVoicePeer(peerName, initiator) {
   };
 
   pc.ontrack = (e) => {
-    // Keep audio element in voiceAudioElements to prevent garbage collection
+    if (e.track.kind === 'video') {
+      // Screen share received
+      document.getElementById('screen-share-video').srcObject = e.streams[0];
+      document.getElementById('screen-share-label').textContent = peerName + ' delar skarm';
+      document.getElementById('screen-share-container').style.display = '';
+      e.track.onended = () => {
+        document.getElementById('screen-share-container').style.display = 'none';
+        document.getElementById('screen-share-video').srcObject = null;
+      };
+      return;
+    }
+    // Audio track — existing behavior
     if (voiceAudioElements[peerName]) {
       voiceAudioElements[peerName].srcObject = null;
     }
@@ -4096,6 +4295,75 @@ function toggleMute() {
 }
 
 function hangupCall() { leaveVoiceChannel(); }
+
+async function toggleScreenShare() {
+  if (isScreenSharing) {
+    stopScreenShare();
+    return;
+  }
+  try {
+    screenShareStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: 'always' }, audio: false });
+    isScreenSharing = true;
+    document.getElementById('screen-btn').classList.add('active');
+
+    const videoTrack = screenShareStream.getVideoTracks()[0];
+
+    // Add video track to all peer connections
+    for (const [peer, pc] of Object.entries(voicePeers)) {
+      pc.addTrack(videoTrack, screenShareStream);
+      // Renegotiate
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
+    }
+
+    // Signal others that we're sharing screen
+    sendSignal({ type: 'screen_share_start', channel: currentVoiceChannel });
+
+    // Show own screen locally
+    document.getElementById('screen-share-video').srcObject = screenShareStream;
+    document.getElementById('screen-share-label').textContent = 'Din skarmdelning';
+    document.getElementById('screen-share-container').style.display = '';
+
+    // Handle user clicking "Stop sharing" in browser UI
+    videoTrack.onended = () => stopScreenShare();
+  } catch(e) {
+    // User cancelled the picker
+    console.log('Screen share cancelled');
+  }
+}
+
+function stopScreenShare() {
+  if (!isScreenSharing) return;
+  isScreenSharing = false;
+  document.getElementById('screen-btn').classList.remove('active');
+
+  if (screenShareStream) {
+    const videoTrack = screenShareStream.getVideoTracks()[0];
+    // Remove video track from all peer connections
+    for (const [peer, pc] of Object.entries(voicePeers)) {
+      const sender = pc.getSenders().find(s => s.track === videoTrack);
+      if (sender) {
+        pc.removeTrack(sender);
+        // Renegotiate
+        pc.createOffer().then(offer => {
+          pc.setLocalDescription(offer);
+          sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
+        });
+      }
+    }
+    screenShareStream.getTracks().forEach(t => t.stop());
+    screenShareStream = null;
+  }
+
+  sendSignal({ type: 'screen_share_stop', channel: currentVoiceChannel });
+  document.getElementById('screen-share-container').style.display = 'none';
+  document.getElementById('screen-share-video').srcObject = null;
+}
+
+function closeScreenShareView() {
+  document.getElementById('screen-share-container').style.display = 'none';
+}
 
 // --- Audio Device Settings ---
 let micAnalyser = null;
