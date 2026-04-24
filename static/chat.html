@@ -110,11 +110,19 @@ body {
 #new-channel-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 #conn-info {
-  padding: 10px 14px; font-family: var(--font-mono); font-size: 10px;
+  padding: 14px; font-family: var(--font-mono); font-size: 13px;
   color: var(--text-muted); border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px;
 }
-#conn-info .dot { color: var(--green); }
-#conn-info .user-name { color: var(--accent); }
+#conn-info .dot { color: var(--green); font-size: 10px; }
+#conn-info .user-name { color: var(--accent); font-weight: 600; flex: 1; }
+#conn-info .online-count { color: var(--text-muted); font-size: 11px; }
+#logout-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); cursor: pointer; font-family: var(--font-mono);
+  font-size: 11px; padding: 4px 10px; transition: 0.2s;
+}
+#logout-btn:hover { border-color: var(--red); color: var(--red); }
 
 /* Main */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -663,8 +671,8 @@ body {
   <button id="new-channel-btn" onclick="showCreateGroupModal()">+ Skapa grupp</button>
   <div id="conn-info">
     <span class="dot">&#9679;</span>
-    <span class="user-name" id="user-display" title="Ditt nickname"></span>
-    <button onclick="doLogout()" title="Logga ut" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;margin-left:auto;padding:2px 4px;line-height:1" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-muted)'">&#10140;</button>
+    <span class="user-name" id="user-display"></span>
+    <button id="logout-btn" onclick="doLogout()">Logga ut</button>
   </div>
 </div>
 
@@ -1324,7 +1332,8 @@ async function loadChannels() {
 
     // Update online count
     if (data.online_count !== undefined) {
-      document.getElementById('user-display').textContent = username + '  \u00b7  ' + data.online_count + ' online';
+      document.getElementById('user-display').textContent = username;
+      document.getElementById('user-display').title = data.online_count + ' online';
     }
 
     const list = document.getElementById('channel-list');
@@ -1384,7 +1393,8 @@ async function loadChannels() {
       const data = await fetch(url).then(r => r.json());
       channelData = data.channels || [];
       if (data.online_count !== undefined) {
-        document.getElementById('user-display').textContent = username + '  \u00b7  ' + data.online_count + ' online';
+        document.getElementById('user-display').textContent = username;
+      document.getElementById('user-display').title = data.online_count + ' online';
       }
       const list = document.getElementById('channel-list');
       list.innerHTML = '';
