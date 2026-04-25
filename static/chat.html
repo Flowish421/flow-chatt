@@ -35,6 +35,52 @@ body {
   display: flex;
 }
 
+/* Guild bar (Discord-style server icons) */
+#guild-bar {
+  width: 72px; flex-shrink: 0;
+  background: var(--bg-deep);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 8px 0; gap: 4px; overflow-y: auto;
+  border-right: 1px solid var(--border);
+  scrollbar-width: none;
+}
+#guild-bar::-webkit-scrollbar { display: none; }
+.guild-icon {
+  width: 48px; height: 48px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: border-radius 0.2s, background 0.2s;
+  background: var(--bg-elevated); color: var(--text-primary);
+  font-family: var(--font-mono); font-weight: 700; font-size: 18px;
+  flex-shrink: 0; overflow: hidden; position: relative;
+  border: 2px solid transparent;
+}
+.guild-icon:hover { border-radius: 35%; background: var(--accent); color: #000; }
+.guild-icon.active { border-radius: 35%; border-color: var(--accent); }
+.guild-icon img { width: 100%; height: 100%; object-fit: cover; }
+.guild-icon.home-icon { background: var(--accent); color: #000; }
+.guild-icon.home-icon:hover { background: var(--green); }
+.guild-separator { width: 32px; height: 2px; background: var(--border); border-radius: 1px; margin: 4px 0; flex-shrink: 0; }
+.guild-add {
+  width: 48px; height: 48px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; background: var(--bg-elevated); color: var(--green);
+  font-size: 24px; transition: border-radius 0.2s, background 0.2s;
+  flex-shrink: 0;
+}
+.guild-add:hover { border-radius: 35%; background: var(--green); color: #000; }
+.guild-icon-tooltip {
+  display: none; position: absolute; left: 76px; top: 50%; transform: translateY(-50%);
+  background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-family: var(--font-mono); font-size: 12px;
+  white-space: nowrap; z-index: 100; pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.guild-icon:hover .guild-icon-tooltip { display: block; }
+.guild-unread-dot {
+  position: absolute; left: -4px; top: 50%; transform: translateY(-50%);
+  width: 8px; height: 8px; border-radius: 50%; background: #fff;
+}
+
 /* Sidebar */
 #sidebar {
   width: 240px; border-right: 1px solid var(--border);
@@ -423,6 +469,7 @@ body {
 /* Mobile */
 @media (max-width: 640px) {
   body { flex-direction: column; }
+  #guild-bar { display: none; }
 
   /* Sidebar: hidden by default, slide-down overlay when toggled */
   #sidebar {
@@ -592,6 +639,36 @@ body {
   display: inline-flex; gap: 3px; margin-left: 2px; vertical-align: middle;
 }
 
+/* DM list */
+.dm-section-header {
+  display: flex; align-items: center; padding: 8px 10px;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;
+}
+.dm-section-header .dm-add {
+  margin-left: auto; background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: 16px; line-height: 1;
+}
+.dm-section-header .dm-add:hover { color: var(--accent); }
+.dm-row {
+  display: flex; align-items: center; padding: 6px 10px; gap: 8px;
+  cursor: pointer; border-radius: 6px; margin-bottom: 2px;
+  font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary);
+  transition: background 0.15s;
+}
+.dm-row:hover { background: rgba(88,166,255,0.08); }
+.dm-row.active { background: rgba(88,166,255,0.15); color: var(--accent); }
+.dm-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: #000; flex-shrink: 0;
+  overflow: hidden;
+}
+.dm-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.dm-info { flex: 1; min-width: 0; }
+.dm-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-preview { font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Empty state for groups */
 .empty-state {
   padding: 16px; text-align: center; font-family: var(--font-mono);
@@ -727,10 +804,11 @@ body {
 </div>
 
 
+<div id="guild-bar"></div>
 <div id="sidebar" role="navigation" aria-label="Kanaler">
-  <h2>Kanaler</h2>
+  <h2 id="sidebar-title">Direktmeddelanden</h2>
   <div class="channel-list" id="channel-list" role="list"></div>
-  <button id="new-channel-btn" onclick="showCreateGroupModal()">+ Skapa grupp</button>
+  <button id="new-channel-btn" onclick="showCreateGroupModal()" style="display:none">+ Skapa kanal</button>
   <div id="conn-info">
     <span id="sidebar-avatar" onclick="showEditProfile()" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;cursor:pointer;flex-shrink:0;font-family:var(--font-mono);background:#4f8ff7;overflow:hidden" title="Redigera profil">F</span>
     <span class="user-name" id="user-display" onclick="showEditProfile()" style="cursor:pointer" title="Redigera profil"></span>
@@ -858,6 +936,19 @@ body {
   <div class="modal-content" style="width:420px;max-height:80vh;overflow-y:auto">
     <h2 style="font-family:var(--font-mono);font-size:14px;margin-bottom:16px;color:var(--accent)">Grupp-installningar</h2>
     <input type="hidden" id="gs-group-id">
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px;padding:12px;background:var(--bg-elevated);border-radius:8px">
+      <div id="gs-icon-preview" style="width:56px;height:56px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#000;overflow:hidden;cursor:pointer;flex-shrink:0;font-family:var(--font-mono)" onclick="document.getElementById('gs-icon-upload').click()" title="Byt grupp-ikon">Q</div>
+      <input type="file" id="gs-icon-upload" accept="image/*" style="display:none" onchange="handleGroupIconUpload(this)">
+      <div style="flex:1;min-width:0">
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:4px">GRUPP-IKON</div>
+        <button onclick="document.getElementById('gs-icon-upload').click()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-secondary);font-family:var(--font-mono);font-size:10px;padding:4px 10px;cursor:pointer">Ladda upp bild</button>
+      </div>
+    </div>
+    <div style="margin-bottom:16px;padding:12px;background:var(--bg-elevated);border-radius:8px">
+      <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:6px">BAKGRUNDSBILD</div>
+      <div id="gs-bg-preview" style="width:100%;height:60px;border-radius:6px;border:1px dashed var(--border);overflow:hidden;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:10px;color:var(--text-muted);background-size:cover;background-position:center" onclick="document.getElementById('gs-bg-upload').click()">Klicka for att valja bakgrund</div>
+      <input type="file" id="gs-bg-upload" accept="image/*" style="display:none" onchange="handleGroupBgUpload(this)">
+    </div>
     <div id="gs-members" style="margin-bottom:16px"></div>
     <div id="gs-requests" style="margin-bottom:16px"></div>
     <div id="gs-roles" style="margin-bottom:16px"></div>
@@ -1079,6 +1170,9 @@ let _typingTimer = null; // debounce typing events
 let _typingUsers = {}; // {username: timeoutId} for typing indicator
 let _lastTypingSent = 0; // timestamp of last typing event sent
 let _memberRolesCache = {}; // {groupId: {username: [{name, color}]}} cached role info
+let currentView = 'home'; // 'home' (DMs) | group id
+let currentDM = null; // username of DM partner if in DM view
+let dmConversations = []; // cached DM list
 
 // === Emoji data ===
 const EMOJIS = {
@@ -1708,6 +1802,187 @@ function debouncedLoadChannels() {
   _loadChannelsDebounce = setTimeout(() => loadChannels(), 300);
 }
 
+// === Guild Bar ===
+function renderGuildBar() {
+  const bar = document.getElementById('guild-bar');
+  bar.innerHTML = '';
+  // Home button (DMs)
+  const home = document.createElement('div');
+  home.className = 'guild-icon home-icon' + (currentView === 'home' ? ' active' : '');
+  home.innerHTML = '<svg width="28" height="28" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="none"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-size="60" font-weight="700" fill="currentColor">Q</text></svg><span class="guild-icon-tooltip">Direktmeddelanden</span>';
+  home.onclick = () => switchView('home');
+  bar.appendChild(home);
+  // Separator
+  const sep = document.createElement('div');
+  sep.className = 'guild-separator';
+  bar.appendChild(sep);
+  // Groups
+  groupData.forEach(g => {
+    const icon = document.createElement('div');
+    icon.className = 'guild-icon' + (currentView === g.id ? ' active' : '');
+    if (g.icon) {
+      icon.innerHTML = '<img src="' + esc(g.icon) + '" alt=""><span class="guild-icon-tooltip">' + esc(g.display_name || g.name) + '</span>';
+    } else {
+      const initials = (g.display_name || g.name || 'Q').substring(0, 2).toUpperCase();
+      icon.innerHTML = '<span style="font-size:16px">' + esc(initials) + '</span><span class="guild-icon-tooltip">' + esc(g.display_name || g.name) + '</span>';
+    }
+    icon.onclick = () => switchView(g.id);
+    bar.appendChild(icon);
+  });
+  // Add group button
+  const add = document.createElement('div');
+  add.className = 'guild-add';
+  add.innerHTML = '+';
+  add.title = 'Skapa grupp';
+  add.onclick = () => showCreateGroupModal();
+  bar.appendChild(add);
+}
+
+function switchView(viewId) {
+  currentView = viewId;
+  currentDM = null;
+  renderGuildBar();
+  if (viewId === 'home') {
+    document.getElementById('sidebar-title').textContent = 'Direktmeddelanden';
+    document.getElementById('new-channel-btn').style.display = 'none';
+    loadDMList();
+  } else {
+    const g = groupData.find(x => x.id === viewId);
+    document.getElementById('sidebar-title').textContent = g ? (g.display_name || g.name) : 'Grupp';
+    document.getElementById('new-channel-btn').style.display = 'block';
+    document.getElementById('new-channel-btn').onclick = () => showCreateChannelModal(viewId);
+    renderGroupSidebar(viewId);
+  }
+}
+
+function renderGroupSidebar(groupId) {
+  const list = document.getElementById('channel-list');
+  list.innerHTML = '';
+  const g = groupData.find(x => x.id === groupId);
+  if (!g) return;
+  // System channels at top
+  const systemChannels = channelData.filter(c => !c.group_id && !c._group);
+  systemChannels.forEach(c => list.appendChild(makeChannelRow(c, 'pin')));
+  if (systemChannels.length) {
+    const div = document.createElement('div');
+    div.className = 'group-divider';
+    list.appendChild(div);
+  }
+  // Group section
+  list.appendChild(makeGroupSection(g));
+}
+
+// === DM System ===
+async function loadDMList() {
+  const list = document.getElementById('channel-list');
+  list.innerHTML = '';
+  // System channels at top
+  const systemChannels = channelData.filter(c => !c.group_id && !c._group);
+  systemChannels.forEach(c => list.appendChild(makeChannelRow(c, 'pin')));
+  if (systemChannels.length) {
+    const div = document.createElement('div');
+    div.className = 'group-divider';
+    list.appendChild(div);
+  }
+  // DM header
+  const header = document.createElement('div');
+  header.className = 'dm-section-header';
+  header.innerHTML = 'Direktmeddelanden <button class="dm-add" onclick="showNewDMModal()" title="Nytt DM">+</button>';
+  list.appendChild(header);
+  // Load conversations
+  try {
+    const data = await fetch('/api/dms?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
+    dmConversations = data.conversations || [];
+    if (dmConversations.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.innerHTML = '<div class="empty-state-icon">💬</div><div>Inga DM annu</div><div style="font-size:10px;margin-top:4px;color:var(--text-muted)">Klicka + for att starta en konversation</div>';
+      list.appendChild(empty);
+    } else {
+      dmConversations.forEach(conv => {
+        list.appendChild(makeDMRow(conv));
+      });
+    }
+  } catch(e) {}
+}
+
+function makeDMRow(conv) {
+  const row = document.createElement('div');
+  row.className = 'dm-row' + (currentDM === conv.other_user ? ' active' : '');
+  const avatarColor = conv.avatar_color || '#4f8ff7';
+  const initial = (conv.other_user || '?')[0].toUpperCase();
+  let avatarHTML;
+  if (conv.avatar) {
+    avatarHTML = '<div class="dm-avatar"><img src="' + esc(conv.avatar) + '"></div>';
+  } else {
+    avatarHTML = '<div class="dm-avatar" style="background:' + esc(avatarColor) + '">' + esc(initial) + '</div>';
+  }
+  const preview = conv.last_message ? esc(conv.last_message).substring(0, 30) : '';
+  row.innerHTML = avatarHTML + '<div class="dm-info"><div class="dm-name">' + esc(conv.other_user) + '</div><div class="dm-preview">' + preview + '</div></div>';
+  row.onclick = () => openDM(conv.other_user);
+  return row;
+}
+
+async function openDM(otherUser) {
+  currentDM = otherUser;
+  currentChannel = null;
+  currentGroup = null;
+  // Update sidebar
+  document.querySelectorAll('.dm-row').forEach(r => r.classList.remove('active'));
+  document.querySelectorAll('.ch-row').forEach(r => r.classList.remove('active'));
+  // Update header
+  document.getElementById('header-name').textContent = '@ ' + otherUser;
+  document.getElementById('header-topic').textContent = 'Direktmeddelande';
+  document.getElementById('btn-settings').style.display = 'none';
+  document.getElementById('btn-leave').style.display = 'none';
+  document.getElementById('join-bar').style.display = 'none';
+  document.getElementById('system-bar').style.display = 'none';
+  document.getElementById('locked-view').style.display = 'none';
+  document.getElementById('messages').style.display = 'flex';
+  document.getElementById('input-area').style.display = 'flex';
+  // Mark active
+  if (currentView === 'home') loadDMList();
+  // Load messages
+  const msgs = document.getElementById('messages');
+  msgs.innerHTML = '';
+  lastDateShown = '';
+  try {
+    const data = await fetch('/api/dm/' + encodeURIComponent(otherUser) + '/messages?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
+    (data.messages || []).forEach(m => {
+      appendMsg(m.author, m.content, m.author === username ? 'self' : 'user', m.created_at, m.attachments ? JSON.parse(m.attachments || '[]') : [], m.id, [], null, m.avatar_color, m.avatar);
+    });
+  } catch(e) {}
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function sendDM() {
+  if (!currentDM) return;
+  const input = document.getElementById('msg-input');
+  const content = input.value.trim();
+  if (!content && pendingFiles.length === 0) return;
+  const attachments = pendingFiles.map(f => ({data: f.dataUrl, name: f.name}));
+  input.value = '';
+  input.style.height = 'auto';
+  pendingFiles = [];
+  document.getElementById('attach-preview').innerHTML = '';
+  document.getElementById('attach-preview').classList.remove('has-files');
+  try {
+    await fetch('/api/dm/' + encodeURIComponent(currentDM) + '/message', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({author: username, token: userToken, content, attachments})
+    });
+  } catch(e) {}
+}
+
+function showNewDMModal() {
+  // Simple prompt for username
+  const target = prompt('Ange anvandarnamn att skicka DM till:');
+  if (target && target.trim()) {
+    openDM(target.trim());
+  }
+}
+
 async function loadChannels() {
   try {
     const url = '/api/groups?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken);
@@ -1787,6 +2062,15 @@ async function loadChannels() {
         row.appendChild(joinBtn);
         list.appendChild(row);
       });
+    }
+    // Render guild bar
+    renderGuildBar();
+    // If in group view, render that group's sidebar
+    if (currentView !== 'home') {
+      renderGroupSidebar(currentView);
+    } else {
+      loadDMList();
+      return; // DM list already rendered
     }
     // Update notification dots after rendering sidebar
     updateNotificationDots();
@@ -2130,6 +2414,7 @@ async function submitInviteCode() {
 
 async function switchChannel(name) {
   currentChannel = name;
+  currentDM = null; // Clear DM mode
   lastDateShown = '';
   // Clear unread notification for this channel
   unreadChannels.delete(name);
@@ -2170,6 +2455,17 @@ async function switchChannel(name) {
   else if (isOwner) currentRoomAccess = 'owner';
   else if (isMember) currentRoomAccess = 'write';
   else currentRoomAccess = 'read';
+
+  // Apply group background image
+  const msgEl = document.getElementById('messages');
+  if (group && group.background) {
+    msgEl.style.backgroundImage = 'url(' + group.background + ')';
+    msgEl.style.backgroundSize = 'cover';
+    msgEl.style.backgroundPosition = 'center';
+    msgEl.style.backgroundAttachment = 'local';
+  } else {
+    msgEl.style.backgroundImage = '';
+  }
 
   // Show/hide UI based on access
   document.getElementById('locked-view').style.display = (currentRoomAccess === 'locked') ? 'flex' : 'none';
@@ -2488,6 +2784,27 @@ function connectRealtime() {
 }
 
 function handleEvent(d) {
+  // DM message
+  if (d.event_type === 'dm_message') {
+    if (d.author === username && currentDM === d.other_user) {
+      appendMsg(d.author, d.content, 'self', d.created_at, d.attachments || [], d.id, [], null, d.avatar_color, d.avatar);
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    } else if (d.author !== username) {
+      const sender = d.author;
+      if (currentDM === sender) {
+        appendMsg(d.author, d.content, 'user', d.created_at, d.attachments || [], d.id, [], null, d.avatar_color, d.avatar);
+        document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+      } else {
+        // Notification
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('DM fran ' + sender, { body: d.content.substring(0, 100) });
+        }
+      }
+      // Refresh DM list
+      if (currentView === 'home') loadDMList();
+    }
+    return;
+  }
   // Access request — show to room owner
   if (d.event_type === 'access_request' && d.owner === username) {
     if (confirm(d.from + ' vill ga med i "' + (d.display_name || d.room) + '".\n\nGodkann?')) {
@@ -2824,6 +3141,8 @@ async function send() {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
   }
+  // DM mode
+  if (currentDM) { sendDM(); return; }
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text && !pendingFiles.length) return;
@@ -3192,6 +3511,23 @@ async function showGroupSettings(groupId) {
   const group = groupData.find(g => g.id === groupId);
   const isOwner = group && group.user_role === 'owner';
   document.getElementById('gs-delete-btn').style.display = isOwner ? '' : 'none';
+  // Show current icon
+  const iconPrev = document.getElementById('gs-icon-preview');
+  if (group && group.icon) {
+    iconPrev.innerHTML = '<img src="' + esc(group.icon) + '" style="width:100%;height:100%;object-fit:cover">';
+  } else {
+    const initials = (group ? (group.display_name || group.name || 'Q') : 'Q').substring(0, 2).toUpperCase();
+    iconPrev.innerHTML = esc(initials);
+  }
+  // Show current background
+  const bgPrev = document.getElementById('gs-bg-preview');
+  if (group && group.background) {
+    bgPrev.style.backgroundImage = 'url(' + group.background + ')';
+    bgPrev.textContent = '';
+  } else {
+    bgPrev.style.backgroundImage = '';
+    bgPrev.textContent = 'Klicka for att valja bakgrund';
+  }
 
   // Load members and custom roles in parallel
   let members = [];
@@ -4045,6 +4381,70 @@ function killPlayer(target) { gameAction('kill', target); }
 function reportBody() { gameAction('report'); }
 function emergencyMeeting() { gameAction('emergency'); }
 function votePlayer(target) { gameAction('vote', target); }
+
+// Group icon upload
+let _pendingGroupIcon = null;
+let _pendingGroupBg = null;
+function handleGroupIconUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement('canvas');
+      const size = Math.min(img.width, img.height, 256);
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const sx = (img.width - size) / 2, sy = (img.height - size) / 2;
+      ctx.drawImage(img, sx, sy, size, size, 0, 0, size, size);
+      _pendingGroupIcon = canvas.toDataURL('image/webp', 0.8);
+      document.getElementById('gs-icon-preview').innerHTML = '<img src="' + _pendingGroupIcon + '" style="width:100%;height:100%;object-fit:cover">';
+      saveGroupAppearance();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+function handleGroupBgUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement('canvas');
+      const w = Math.min(img.width, 800);
+      const h = Math.round((w / img.width) * img.height);
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      _pendingGroupBg = canvas.toDataURL('image/webp', 0.7);
+      const prev = document.getElementById('gs-bg-preview');
+      prev.style.backgroundImage = 'url(' + _pendingGroupBg + ')';
+      prev.textContent = '';
+      saveGroupAppearance();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+async function saveGroupAppearance() {
+  const groupId = document.getElementById('gs-group-id').value;
+  if (!groupId) return;
+  const body = { author: username, token: userToken };
+  if (_pendingGroupIcon !== null) { body.icon = _pendingGroupIcon; _pendingGroupIcon = null; }
+  if (_pendingGroupBg !== null) { body.background = _pendingGroupBg; _pendingGroupBg = null; }
+  try {
+    await fetch('/api/group/' + encodeURIComponent(groupId) + '/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    debouncedLoadChannels();
+  } catch(e) {}
+}
 
 async function leaveCurrentGroup() {
   const groupId = document.getElementById('gs-group-id').value;

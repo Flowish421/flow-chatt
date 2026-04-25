@@ -629,6 +629,35 @@ def init_db():
             used INTEGER DEFAULT 0
         )
     """)
+    # --- Direct Messages ---
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dm_conversations (
+            id TEXT PRIMARY KEY,
+            user1 TEXT NOT NULL,
+            user2 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user1, user2)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dm_messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            author TEXT NOT NULL,
+            content TEXT NOT NULL,
+            attachments TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_msg_conv ON dm_messages(conversation_id, created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_conv_user1 ON dm_conversations(user1)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_conv_user2 ON dm_conversations(user2)")
+    # Migration: add icon and background to groups
+    for col, default in [("icon", "''"), ("background", "''")]:
+        try:
+            conn.execute(f"ALTER TABLE groups ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
     # Seed the global chat room "allmant" (public, writable by all)
     conn.execute("""
         INSERT OR IGNORE INTO channels (name, display_name, topic, visibility, owner, created_by, created_at)
@@ -1134,7 +1163,6 @@ class ChatHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
-
         # Rate limit API GET requests (not static files)
         if path.startswith("/api/"):
             client_ip = self.real_ip()
@@ -1471,6 +1499,73 @@ class ChatHandler(BaseHTTPRequestHandler):
             finally:
                 with sse_lock:
                     sse_clients[:] = [c for c in sse_clients if c[0] is not q]
+            return
+
+        # API: list DM conversations — GET /api/dms
+        if path == "/api/dms":
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            if not req_user or not req_token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                rows = db.execute("""
+                    SELECT dc.*,
+                        (SELECT content FROM dm_messages WHERE conversation_id = dc.id ORDER BY created_at DESC LIMIT 1) as last_message,
+                        (SELECT author FROM dm_messages WHERE conversation_id = dc.id ORDER BY created_at DESC LIMIT 1) as last_author,
+                        (SELECT created_at FROM dm_messages WHERE conversation_id = dc.id ORDER BY created_at DESC LIMIT 1) as last_time
+                    FROM dm_conversations dc
+                    WHERE dc.user1 = ? OR dc.user2 = ?
+                    ORDER BY last_time DESC
+                """, (req_user, req_user)).fetchall()
+                convos = []
+                for r in rows:
+                    d = dict(r)
+                    other = d["user2"] if d["user1"] == req_user else d["user1"]
+                    profile = db.execute("SELECT avatar_color, avatar, bio FROM users WHERE username = ?", (other,)).fetchone()
+                    d["other_user"] = other
+                    d["avatar_color"] = profile["avatar_color"] if profile else "#4f8ff7"
+                    d["avatar"] = profile["avatar"] if profile else ""
+                    convos.append(d)
+            finally:
+                db.close()
+            self.send_json({"ok": True, "conversations": convos})
+            return
+
+        # API: get DM messages — GET /api/dm/{username}/messages
+        if re.match(r'^/api/dm/[^/]+/messages$', path):
+            other_user = path.split("/")[3]
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            if not req_user or not req_token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                u1, u2 = sorted([req_user, other_user])
+                conv = db.execute("SELECT id FROM dm_conversations WHERE user1 = ? AND user2 = ?", (u1, u2)).fetchone()
+                if not conv:
+                    self.send_json({"ok": True, "messages": []})
+                    return
+                msgs = db.execute("""
+                    SELECT dm.*, u.avatar_color, u.avatar FROM dm_messages dm
+                    LEFT JOIN users u ON dm.author = u.username
+                    WHERE dm.conversation_id = ?
+                    ORDER BY dm.created_at DESC LIMIT 200
+                """, (conv["id"],)).fetchall()
+                messages = [dict(m) for m in reversed(msgs)]
+            finally:
+                db.close()
+            self.send_json({"ok": True, "messages": messages})
             return
 
         # API: list groups — public + private groups user belongs to
@@ -3880,6 +3975,129 @@ class ChatHandler(BaseHTTPRequestHandler):
                     db.commit()
             finally:
                 db.close()
+            self.send_json({"ok": True})
+            return
+
+        # ===== DM ENDPOINTS =====
+
+        # API: send DM — POST /api/dm/{username}/message
+        if re.match(r'^/api/dm/[^/]+/message$', path):
+            other_user = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "")
+            content = body.get("content", "").strip()
+            attachments = body.get("attachments", [])
+            if not author or not token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            if not content and not attachments:
+                self.send_json({"ok": False, "error": "empty message"}, 400)
+                return
+            if len(content) > 4000:
+                content = content[:4000]
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                target = db.execute("SELECT username, avatar_color, avatar FROM users WHERE username = ?", (other_user,)).fetchone()
+                if not target:
+                    self.send_json({"ok": False, "error": "user not found"}, 404)
+                    return
+                sender = db.execute("SELECT avatar_color, avatar FROM users WHERE username = ?", (author,)).fetchone()
+                u1, u2 = sorted([author, other_user])
+                conv = db.execute("SELECT id FROM dm_conversations WHERE user1 = ? AND user2 = ?", (u1, u2)).fetchone()
+                if not conv:
+                    conv_id = uuid.uuid4().hex
+                    db.execute("INSERT INTO dm_conversations (id, user1, user2, created_at) VALUES (?, ?, ?, ?)",
+                               (conv_id, u1, u2, now()))
+                else:
+                    conv_id = conv["id"]
+                msg_id = uuid.uuid4().hex
+                ts = now()
+                att_json = json.dumps(attachments[:5]) if attachments else "[]"
+                db.execute("INSERT INTO dm_messages (id, conversation_id, author, content, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                           (msg_id, conv_id, author, content, att_json, ts))
+                db.commit()
+            finally:
+                db.close()
+            msg_data = {
+                "event_type": "dm_message",
+                "id": msg_id,
+                "conversation_id": conv_id,
+                "author": author,
+                "other_user": other_user,
+                "content": content,
+                "attachments": attachments[:5] if attachments else [],
+                "created_at": ts,
+                "avatar_color": sender["avatar_color"] if sender else "#4f8ff7",
+                "avatar": sender["avatar"] if sender else ""
+            }
+            send_to_user(author, msg_data)
+            send_to_user(other_user, msg_data)
+            self.send_json({"ok": True, "id": msg_id, "conversation_id": conv_id, "created_at": ts})
+            return
+
+        # API: update group settings — POST /api/group/{id}/settings
+        if re.match(r'^/api/group/[a-f0-9]+/settings$', path):
+            group_id = path.split("/")[3]
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "")
+            if not author or not token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                group = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+                if not group:
+                    self.send_json({"ok": False, "error": "group not found"}, 404)
+                    return
+                member = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, author)).fetchone()
+                if not member or member["role"] not in ("owner", "admin"):
+                    self.send_json({"ok": False, "error": "only owner/admin can update settings"}, 403)
+                    return
+                updates = []
+                params_list = []
+                display_name = body.get("display_name", "").strip()[:50]
+                description = body.get("description", "").strip()[:200]
+                icon = body.get("icon", "")
+                background = body.get("background", "")
+                if display_name:
+                    updates.append("display_name = ?")
+                    params_list.append(display_name)
+                if description is not None and "description" in body:
+                    updates.append("description = ?")
+                    params_list.append(description)
+                if icon is not None and "icon" in body:
+                    if icon and not icon.startswith("data:image/"):
+                        self.send_json({"ok": False, "error": "icon must be an image data URL"}, 400)
+                        return
+                    if len(icon) > 150000:
+                        self.send_json({"ok": False, "error": "icon too large (max ~100KB)"}, 400)
+                        return
+                    updates.append("icon = ?")
+                    params_list.append(icon)
+                if background is not None and "background" in body:
+                    if background and not background.startswith("data:image/"):
+                        self.send_json({"ok": False, "error": "background must be an image data URL"}, 400)
+                        return
+                    if len(background) > 500000:
+                        self.send_json({"ok": False, "error": "background too large (max ~350KB)"}, 400)
+                        return
+                    updates.append("background = ?")
+                    params_list.append(background)
+                if updates:
+                    params_list.append(group_id)
+                    db.execute(f"UPDATE groups SET {', '.join(updates)} WHERE id = ?", params_list)
+                    db.commit()
+            finally:
+                db.close()
+            broadcast({"event_type": "group_updated", "group_id": group_id})
             self.send_json({"ok": True})
             return
 
