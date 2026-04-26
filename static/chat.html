@@ -87,6 +87,7 @@ body {
   display: flex; flex-direction: column; flex-shrink: 0;
   background: var(--bg-surface);
 }
+#mobile-nav { display: none; }
 #sidebar h2 {
   font-family: var(--font-mono); font-size: 12px; font-weight: 500;
   letter-spacing: 2px; text-transform: uppercase;
@@ -292,6 +293,12 @@ body {
   line-height: 1;
 }
 #attach-btn:hover { color: var(--accent); border-color: var(--accent); }
+#camera-btn {
+  background: none; border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text-muted); padding: 9px 10px; cursor: pointer; font-size: 16px;
+  line-height: 1;
+}
+#camera-btn:hover { color: var(--accent); border-color: var(--accent); }
 #msg-input {
   flex: 1; background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: 8px; color: var(--text-primary); font-family: var(--font-mono);
@@ -471,6 +478,36 @@ body {
   body { flex-direction: column; }
   #guild-bar { display: none; }
 
+  /* Mobile nav inside sidebar */
+  #mobile-nav {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 12px; overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+  #mobile-nav::-webkit-scrollbar { display: none; }
+  .mnav-item {
+    width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-family: var(--font-mono); font-weight: 700;
+    font-size: 14px; background: var(--bg-elevated); color: var(--text-primary);
+    border: 2px solid transparent; transition: border-radius 0.2s, background 0.2s;
+    overflow: hidden; position: relative;
+  }
+  .mnav-item:hover, .mnav-item:active { border-radius: 35%; background: var(--accent); color: #000; }
+  .mnav-item.active { border-radius: 35%; border-color: var(--accent); }
+  .mnav-item.home { background: var(--accent); color: #000; }
+  .mnav-item.home:hover, .mnav-item.home:active { background: var(--green); }
+  .mnav-item img { width: 100%; height: 100%; object-fit: cover; }
+  .mnav-sep { width: 2px; height: 24px; background: var(--border); border-radius: 1px; flex-shrink: 0; }
+  .mnav-add {
+    width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; background: var(--bg-elevated); color: var(--green);
+    font-size: 20px; font-weight: 700; transition: border-radius 0.2s, background 0.2s;
+  }
+  .mnav-add:hover, .mnav-add:active { border-radius: 35%; background: var(--green); color: #000; }
+
   /* Sidebar: hidden by default, slide-down overlay when toggled */
   #sidebar {
     width: 100%; height: auto; max-height: 0; border-right: none;
@@ -529,6 +566,7 @@ body {
   #emoji-input-bar { padding: 2px 8px; gap: 1px; }
   #emoji-input-bar button { font-size: 18px; padding: 2px 3px; }
   #attach-btn { padding: 9px 10px; font-size: 16px; }
+  #camera-btn { padding: 9px 10px; font-size: 16px; }
   #emoji-btn { padding: 9px 10px !important; font-size: 16px !important; }
   #eph-btn { padding: 9px 10px !important; font-size: 16px !important; }
   #ephemeral-bar { padding: 6px 10px !important; font-size: 12px; }
@@ -806,6 +844,7 @@ body {
 
 <div id="guild-bar"></div>
 <div id="sidebar" role="navigation" aria-label="Kanaler">
+  <div id="mobile-nav"></div>
   <h2 id="sidebar-title">Direktmeddelanden</h2>
   <div class="channel-list" id="channel-list" role="list"></div>
   <button id="new-channel-btn" onclick="showCreateGroupModal()" style="display:none">+ Skapa kanal</button>
@@ -867,7 +906,9 @@ body {
   </div>
   <div id="input-area">
     <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Bifoga bild">📎</button>
+    <button id="camera-btn" onclick="openCamera()" title="Ta foto">📷</button>
     <input type="file" id="file-input" multiple accept="image/*" style="display:none" onchange="onFiles(this.files)">
+    <input type="file" id="camera-input" accept="image/*" capture="environment" style="display:none" onchange="onFiles(this.files)">
     <button id="emoji-btn" onclick="toggleEmojiPicker(event)" title="Emoji" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);padding:9px 10px;cursor:pointer;font-size:16px;line-height:1">😀</button>
     <button id="eph-btn" onclick="toggleEphemeral()" title="Forsvinnande meddelande" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);padding:9px 10px;cursor:pointer;font-size:16px;line-height:1">&#128164;</button>
     <textarea id="msg-input" placeholder="Skriv ett meddelande..." rows="1"
@@ -1836,6 +1877,39 @@ function renderGuildBar() {
   add.title = 'Skapa grupp';
   add.onclick = () => showCreateGroupModal();
   bar.appendChild(add);
+
+  // Mobile nav (mirrors guild bar inside sidebar)
+  const mnav = document.getElementById('mobile-nav');
+  if (mnav) {
+    mnav.innerHTML = '';
+    const mHome = document.createElement('div');
+    mHome.className = 'mnav-item home' + (currentView === 'home' ? ' active' : '');
+    mHome.innerHTML = '<svg width="22" height="22" viewBox="0 0 100 100"><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-size="60" font-weight="700" fill="currentColor">Q</text></svg>';
+    mHome.title = 'Direktmeddelanden';
+    mHome.onclick = () => switchView('home');
+    mnav.appendChild(mHome);
+    const mSep = document.createElement('div');
+    mSep.className = 'mnav-sep';
+    mnav.appendChild(mSep);
+    groupData.forEach(g => {
+      const mi = document.createElement('div');
+      mi.className = 'mnav-item' + (currentView === g.id ? ' active' : '');
+      if (g.icon) {
+        mi.innerHTML = '<img src="' + esc(g.icon) + '" alt="">';
+      } else {
+        mi.textContent = (g.display_name || g.name || 'Q').substring(0, 2).toUpperCase();
+      }
+      mi.title = g.display_name || g.name;
+      mi.onclick = () => switchView(g.id);
+      mnav.appendChild(mi);
+    });
+    const mAdd = document.createElement('div');
+    mAdd.className = 'mnav-add';
+    mAdd.innerHTML = '+';
+    mAdd.title = 'Skapa grupp';
+    mAdd.onclick = () => showCreateGroupModal();
+    mnav.appendChild(mAdd);
+  }
 }
 
 function switchView(viewId) {
@@ -3054,6 +3128,68 @@ function connectSSE() {
 }
 
 // === Files / Images ===
+function openCamera() {
+  // On mobile: use capture input to open native camera
+  // On desktop: fallback to getUserMedia live viewfinder
+  if (/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+    document.getElementById('camera-input').click();
+  } else {
+    openDesktopCamera();
+  }
+}
+
+async function openDesktopCamera() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+  } catch (err) {
+    appendSystem('Kunde inte oppna kameran: ' + err.message);
+    return;
+  }
+  // Build overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'camera-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.9);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px';
+  const video = document.createElement('video');
+  video.autoplay = true; video.playsInline = true; video.muted = true;
+  video.srcObject = stream;
+  video.style.cssText = 'max-width:90vw;max-height:70vh;border-radius:12px;transform:scaleX(-1)';
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:16px';
+  const snapBtn = document.createElement('button');
+  snapBtn.textContent = 'Ta foto';
+  snapBtn.style.cssText = 'background:var(--accent);border:none;border-radius:50%;width:64px;height:64px;color:#000;font-family:var(--font-mono);font-weight:700;font-size:13px;cursor:pointer';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Stang';
+  closeBtn.style.cssText = 'background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);font-family:var(--font-mono);font-size:13px;padding:10px 20px;cursor:pointer';
+  btnRow.appendChild(snapBtn);
+  btnRow.appendChild(closeBtn);
+  overlay.appendChild(video);
+  overlay.appendChild(btnRow);
+  document.body.appendChild(overlay);
+
+  function cleanup() {
+    stream.getTracks().forEach(t => t.stop());
+    overlay.remove();
+  }
+  closeBtn.onclick = cleanup;
+  overlay.onclick = (e) => { if (e.target === overlay) cleanup(); };
+  snapBtn.onclick = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    const name = 'foto_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+    pendingFiles.push({ dataUrl, name, size: Math.round(dataUrl.length * 0.75) });
+    renderPreview();
+    cleanup();
+  };
+}
+
 function onFiles(fileList) {
   const canWrite = (currentRoomAccess === 'write' || currentRoomAccess === 'owner');
   if (!canWrite) return;
