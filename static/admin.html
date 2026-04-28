@@ -318,11 +318,24 @@ function fmtTime(iso) {
   } catch(e) { return iso.substring(0, 16); }
 }
 
-// Auto-login if token saved
+// Auto-login if token saved — verify it's still valid
 if (adminToken) {
-  document.getElementById('login').classList.add('hidden');
-  document.getElementById('dash').classList.add('on');
-  loadDashboard();
+  fetch('/api/admin/dashboard', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+  }).then(r => r.json()).then(res => {
+    if (res.ok) {
+      document.getElementById('login').classList.add('hidden');
+      document.getElementById('dash').classList.add('on');
+      loadDashboard();
+    } else {
+      adminToken = '';
+      sessionStorage.removeItem('admin-token');
+    }
+  }).catch(() => {
+    adminToken = '';
+    sessionStorage.removeItem('admin-token');
+  });
 }
 
 // Auto-refresh every 10s

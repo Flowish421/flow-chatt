@@ -740,6 +740,12 @@ body {
 #screen-share-container { transition: box-shadow 0.2s; }
 #screen-share-container:hover { box-shadow: 0 8px 40px rgba(88,166,255,0.15); }
 #screen-btn.active { color: var(--green) !important; border-color: var(--green) !important; background: rgba(63,185,80,0.1) !important; }
+#cam-btn.active { color: var(--green) !important; border-color: var(--green) !important; background: rgba(63,185,80,0.1) !important; }
+#camera-grid { display:none;position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:399;display:none;gap:8px;justify-content:center;flex-wrap:wrap; }
+#camera-grid video { width:200px;height:150px;object-fit:cover;border-radius:12px;border:1px solid var(--border);background:#000; }
+#camera-grid .cam-label { position:absolute;bottom:4px;left:8px;font-family:var(--font-mono);font-size:10px;color:#fff;background:rgba(0,0,0,0.6);padding:2px 6px;border-radius:4px; }
+#camera-grid .cam-cell { position:relative;display:inline-block; }
+@media (max-width:600px) { #camera-grid video { width:140px;height:105px; } }
 
 /* Among Us Game */
 .game-player {
@@ -1099,6 +1105,9 @@ body {
   <video id="screen-share-video" autoplay playsinline style="width:100%;display:block;background:#000"></video>
 </div>
 
+<!-- Camera Grid (above call overlay) -->
+<div id="camera-grid"></div>
+
 <!-- Voice Channel Overlay (bottom bar) -->
 <div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--green);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(52,211,153,0.2);align-items:center;gap:16px">
   <div style="font-size:20px">&#128266;</div>
@@ -1107,6 +1116,7 @@ body {
     <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="call-timer">00:00</div>
   </div>
   <button id="mute-btn" onclick="toggleMute()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Mute">&#127897;</button>
+  <button id="cam-btn" onclick="toggleCamera()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Kamera">&#127909;</button>
   <button id="screen-btn" onclick="toggleScreenShare()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Dela skarm">&#128187;</button>
   <button onclick="showAudioSettings()" style="background:none;border:1px solid var(--border);border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--text-primary)" title="Ljud-installningar">&#9881;</button>
   <button onclick="hangupCall()" style="background:var(--red);border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer;color:#000" title="Lamna">&#10005;</button>
@@ -2981,10 +2991,24 @@ function handleEvent(d) {
     handleCallSignal(d);
     return;
   }
-  // Screen share stop signal
+  // Screen share signals
+  if (d.type === 'screen_share_start' && d.from !== username) {
+    screenPeersSharing[d.from] = true;
+    return;
+  }
   if (d.type === 'screen_share_stop' && d.from !== username) {
+    delete screenPeersSharing[d.from];
     document.getElementById('screen-share-container').style.display = 'none';
     document.getElementById('screen-share-video').srcObject = null;
+    return;
+  }
+  // Camera signals
+  if (d.type === 'camera_start' && d.from !== username) {
+    cameraPeersSharing[d.from] = true;
+    return;
+  }
+  if (d.type === 'camera_stop' && d.from !== username) {
+    removeCameraFeed(d.from);
     return;
   }
   // Voice channel events
@@ -5034,8 +5058,15 @@ async function leaveVoiceChannel() {
 }
 
 function cleanupVoice() {
+  // Stop camera if active
+  if (isCameraOn) stopCamera();
   // Stop screen sharing if active
   if (isScreenSharing) stopScreenShare();
+  // Clear all remote camera feeds
+  cameraPeersSharing = {};
+  screenPeersSharing = {};
+  document.getElementById('camera-grid').innerHTML = '';
+  document.getElementById('camera-grid').style.display = 'none';
   stopMicLevel();
   for (const [peer, pc] of Object.entries(voicePeers)) {
     pc.close();
@@ -5075,6 +5106,10 @@ async function createVoicePeer(peerName, initiator) {
   if (streamToSend) {
     streamToSend.getTracks().forEach(t => pc.addTrack(t, streamToSend));
   }
+  // If camera is on, add camera track too
+  if (isCameraOn && localCameraStream) {
+    localCameraStream.getVideoTracks().forEach(t => pc.addTrack(t, localCameraStream));
+  }
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
@@ -5084,14 +5119,24 @@ async function createVoicePeer(peerName, initiator) {
 
   pc.ontrack = (e) => {
     if (e.track.kind === 'video') {
-      // Screen share received
-      document.getElementById('screen-share-video').srcObject = e.streams[0];
-      document.getElementById('screen-share-label').textContent = peerName + ' delar skarm';
-      document.getElementById('screen-share-container').style.display = '';
-      e.track.onended = () => {
-        document.getElementById('screen-share-container').style.display = 'none';
-        document.getElementById('screen-share-video').srcObject = null;
-      };
+      // Determine if this is a camera or screen share track
+      // Screen share tracks from getDisplayMedia have label containing "screen" or "window" or "monitor"
+      const lbl = (e.track.label || '').toLowerCase();
+      const isScreen = screenPeersSharing[peerName] && (lbl.includes('screen') || lbl.includes('window') || lbl.includes('monitor') || lbl.includes('display') || !cameraPeersSharing[peerName]);
+      if (cameraPeersSharing[peerName] && !isScreen) {
+        // Camera feed received
+        showCameraFeed(peerName, e.streams[0], false);
+        e.track.onended = () => removeCameraFeed(peerName);
+      } else {
+        // Screen share received
+        document.getElementById('screen-share-video').srcObject = e.streams[0];
+        document.getElementById('screen-share-label').textContent = peerName + ' delar skarm';
+        document.getElementById('screen-share-container').style.display = '';
+        e.track.onended = () => {
+          document.getElementById('screen-share-container').style.display = 'none';
+          document.getElementById('screen-share-video').srcObject = null;
+        };
+      }
       return;
     }
     // Audio track — existing behavior
@@ -5253,6 +5298,113 @@ function stopScreenShare() {
 
 function closeScreenShareView() {
   document.getElementById('screen-share-container').style.display = 'none';
+}
+
+// === Live Camera in Voice Call ===
+let localCameraStream = null;
+let isCameraOn = false;
+let cameraPeersSharing = {};  // {peerName: true} — track who has camera on
+let screenPeersSharing = {};  // {peerName: true} — track who is screen sharing
+
+async function toggleCamera() {
+  if (isCameraOn) {
+    stopCamera();
+    return;
+  }
+  if (!currentVoiceChannel) return;
+  try {
+    localCameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    isCameraOn = true;
+    document.getElementById('cam-btn').classList.add('active');
+
+    const videoTrack = localCameraStream.getVideoTracks()[0];
+
+    // Add video track to all peer connections
+    for (const [peer, pc] of Object.entries(voicePeers)) {
+      try {
+        pc.addTrack(videoTrack, localCameraStream);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
+      } catch(e) {
+        console.warn('Camera negotiation failed for', peer, e);
+      }
+    }
+
+    sendSignal({ type: 'camera_start', channel: currentVoiceChannel });
+
+    // Show local preview
+    showCameraFeed(username, localCameraStream, true);
+
+    videoTrack.onended = () => stopCamera();
+  } catch(e) {
+    console.log('Kamera nekad eller ej tillganglig');
+  }
+}
+
+function stopCamera() {
+  if (!isCameraOn) return;
+  isCameraOn = false;
+  document.getElementById('cam-btn').classList.remove('active');
+
+  if (localCameraStream) {
+    const videoTrack = localCameraStream.getVideoTracks()[0];
+    for (const [peer, pc] of Object.entries(voicePeers)) {
+      const sender = pc.getSenders().find(s => s.track === videoTrack);
+      if (sender) {
+        pc.removeTrack(sender);
+        pc.createOffer().then(async (offer) => {
+          await pc.setLocalDescription(offer);
+          sendSignal({ type: 'call_offer', to: peer, offer: pc.localDescription, channel: currentVoiceChannel });
+        });
+      }
+    }
+    localCameraStream.getTracks().forEach(t => t.stop());
+    localCameraStream = null;
+  }
+
+  sendSignal({ type: 'camera_stop', channel: currentVoiceChannel });
+  removeCameraFeed(username);
+}
+
+function showCameraFeed(user, stream, mirrored) {
+  const grid = document.getElementById('camera-grid');
+  let cell = document.getElementById('cam-cell-' + user);
+  if (!cell) {
+    cell = document.createElement('div');
+    cell.className = 'cam-cell';
+    cell.id = 'cam-cell-' + user;
+    const vid = document.createElement('video');
+    vid.autoplay = true;
+    vid.playsInline = true;
+    vid.muted = !!mirrored;  // mute own preview
+    if (mirrored) vid.style.transform = 'scaleX(-1)';
+    const label = document.createElement('div');
+    label.className = 'cam-label';
+    label.textContent = mirrored ? 'Du' : user;
+    cell.appendChild(vid);
+    cell.appendChild(label);
+    grid.appendChild(cell);
+  }
+  const vid = cell.querySelector('video');
+  vid.srcObject = stream;
+  vid.play().catch(() => {});
+  grid.style.display = 'flex';
+}
+
+function removeCameraFeed(user) {
+  const cell = document.getElementById('cam-cell-' + user);
+  if (cell) {
+    const vid = cell.querySelector('video');
+    if (vid) vid.srcObject = null;
+    cell.remove();
+  }
+  delete cameraPeersSharing[user];
+  const grid = document.getElementById('camera-grid');
+  if (!grid.children.length) grid.style.display = 'none';
 }
 
 // --- Audio Device Settings ---

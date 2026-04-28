@@ -964,6 +964,16 @@ class WebSocketConnection:
                     elif msg.get("type") in ("call_offer", "call_answer", "ice_candidate", "call_reject", "call_hangup"):
                         msg["from"] = self.username
                         send_to_user(msg.get("to"), msg)
+                    # Broadcast signals (camera, screen share) — relay to all in voice channel
+                    elif msg.get("type") in ("camera_start", "camera_stop", "screen_share_start", "screen_share_stop"):
+                        msg["from"] = self.username
+                        channel = msg.get("channel", "")
+                        if channel:
+                            with voice_lock:
+                                members = list(voice_rooms.get(channel, []))
+                            for m in members:
+                                if m != self.username:
+                                    send_to_user(m, msg)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
         self.alive = False
@@ -1869,6 +1879,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             else:
                 record_admin_failure(client_ip)
                 self.send_json({"ok": False, "error": "Fel losenord"}, 401)
+            return
+
+        # API: admin logout
+        if path == "/api/admin/logout":
+            token = self.headers.get("X-Admin-Token", "")
+            admin_sessions.discard(token)
+            self.send_json({"ok": True})
             return
 
         # API: admin dashboard
