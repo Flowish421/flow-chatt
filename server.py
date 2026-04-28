@@ -52,6 +52,20 @@ ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "onboarding@resend.com")
 
+# --- Bot / Webhook integration ---
+# BOT_TOKENS: comma-separated "name:secret" pairs, e.g. "gustave:abc123,kairos:def456"
+BOT_TOKENS_RAW = os.environ.get("BOT_TOKENS", "")
+BOT_TOKENS = {}  # name -> secret
+for pair in BOT_TOKENS_RAW.split(","):
+    pair = pair.strip()
+    if ":" in pair:
+        bname, bsecret = pair.split(":", 1)
+        BOT_TOKENS[bname.strip()] = bsecret.strip()
+# WEBHOOK_URL: URL to POST channel events to (e.g. cortex substrate)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+# WEBHOOK_SECRET: shared secret for HMAC-SHA256 signature on outgoing webhooks
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
 DISPOSABLE_DOMAINS = {
     "mailinator.com","guerrillamail.com","guerrillamail.de","tempmail.com","throwaway.email",
     "yopmail.com","10minutemail.com","trashmail.com","fakeinbox.com","sharklasers.com",
@@ -1075,9 +1089,38 @@ class WebSocketConnection:
         self.alive = False
 
 
+# --- Outgoing webhook (fire-and-forget, non-blocking) ---
+def webhook_dispatch(event_data):
+    """POST event to WEBHOOK_URL if configured. Runs in a daemon thread."""
+    if not WEBHOOK_URL:
+        return
+    def _send():
+        try:
+            payload = json.dumps(event_data).encode()
+            req = urllib.request.Request(
+                WEBHOOK_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            if WEBHOOK_SECRET:
+                sig = hmac.new(WEBHOOK_SECRET.encode(), payload, hashlib.sha256).hexdigest()
+                req.add_header("X-Webhook-Signature", sig)
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass  # fail-open: webhook down should never break chat
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
+
+
 def broadcast(event_data, channel=None):
-    """Send event to ALL clients (SSE + WebSocket). Filter private rooms and private group channels.
+    """Send event to ALL clients (SSE + WebSocket + webhook). Filter private rooms and private group channels.
     Collects targets under lock, sends outside lock to avoid holding locks during I/O."""
+    # Forward public channel messages to webhook (skip bot messages to prevent loops)
+    evt = event_data.get("event_type", "")
+    if evt == "chat_message" and event_data.get("role") != "bot":
+        webhook_dispatch(event_data)
+
     filter_members = None
     if channel:
         with visibility_lock:
@@ -4324,6 +4367,72 @@ class ChatHandler(BaseHTTPRequestHandler):
                 db.close()
             send_to_user(target, {"event_type": "friend_removed", "username": author})
             self.send_json({"ok": True})
+            return
+
+        # --- Bot integration ---
+
+        # API: bot send message — POST /api/bot/message
+        # Auth via BOT_TOKENS env var, not user tokens.
+        # Body: { "bot": "gustave", "secret": "...", "channel": "allmant", "content": "Hello!" }
+        if path == "/api/bot/message":
+            bot_name = body.get("bot", "").strip()[:20]
+            bot_secret = body.get("secret", "")
+            channel = body.get("channel", "").strip()[:50]
+            content = body.get("content", "").strip()[:5000]
+            if not bot_name or not bot_secret:
+                self.send_json({"ok": False, "error": "bot auth required"}, 401)
+                return
+            expected = BOT_TOKENS.get(bot_name)
+            if not expected or not hmac.compare_digest(expected, bot_secret):
+                self.send_json({"ok": False, "error": "invalid bot credentials"}, 401)
+                return
+            if not channel or not content:
+                self.send_json({"ok": False, "error": "channel and content required"}, 400)
+                return
+            # Verify channel exists
+            db = get_db()
+            try:
+                ch = db.execute("SELECT name FROM channels WHERE name = ?", (channel,)).fetchone()
+            finally:
+                db.close()
+            if not ch:
+                self.send_json({"ok": False, "error": "channel not found"}, 404)
+                return
+            msg_id = str(uuid.uuid4())
+            ts = now()
+            db = get_db()
+            try:
+                db.execute(
+                    "INSERT INTO messages (id, channel, author, content, role, attachments, created_at) VALUES (?, ?, ?, ?, 'bot', '[]', ?)",
+                    (msg_id, channel, bot_name, content, ts)
+                )
+                db.commit()
+                prune_old_messages(db)
+            finally:
+                db.close()
+            broadcast_data = {
+                "event_type": "chat_message",
+                "id": msg_id,
+                "channel": channel,
+                "author": bot_name,
+                "content": content,
+                "role": "bot",
+                "attachments": [],
+                "has_attachments": False,
+                "created_at": ts,
+                "avatar_color": "#bc8cff",
+            }
+            broadcast(broadcast_data, channel)
+            self.send_json({"ok": True, "id": msg_id, "channel": channel})
+            return
+
+        # API: list registered bots — POST /api/bot/list (admin only)
+        if path == "/api/bot/list":
+            admin_tok = self.headers.get("X-Admin-Token", "")
+            if admin_tok not in admin_sessions:
+                self.send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            self.send_json({"ok": True, "bots": list(BOT_TOKENS.keys())})
             return
 
         # API: update group settings — POST /api/group/{id}/settings

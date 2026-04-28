@@ -206,6 +206,13 @@ body {
 .msg.role-user .author { color: var(--accent); }
 .msg.role-self .author { color: var(--green); }
 .msg.role-system .author { color: var(--amber); }
+.msg.role-bot .author { color: var(--purple); }
+.bot-badge {
+  display: inline-block; font-size: 9px; font-weight: 700;
+  background: var(--purple); color: var(--bg-deep);
+  padding: 1px 5px; border-radius: 3px; margin-left: 4px;
+  vertical-align: middle; letter-spacing: 0.5px;
+}
 .msg .content { color: var(--text-primary); word-break: break-word; }
 .msg .content code { background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
 .msg-system {
@@ -2942,6 +2949,7 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
   let html = `<span class="time">${esc(time)}</span><span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:700;color:#fff;margin-right:8px;flex-shrink:0;font-family:var(--font-mono);background:${msgAvatarColor};vertical-align:middle;cursor:pointer;overflow:hidden" onclick="showProfile('${escAttr(author)}')">${avatarContent}</span><span class="author" style="color:${authorColor};cursor:pointer" onclick="showProfile('${escAttr(author)}')">${esc(author)}</span>`;
   // Role badges from cache
   html += getRoleBadgesHTML(author);
+  if (role === 'bot') html += '<span class="bot-badge">BOT</span>';
   if (ephemeral) html += `<span class="eph-badge">${ephemeral}s</span>`;
   if (content && content !== '[bild]' && !content.match(/^\[\d+ bilder\]$/)) {
     const MAX_DISPLAY = 1000;
