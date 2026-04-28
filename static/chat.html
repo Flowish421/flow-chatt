@@ -1140,6 +1140,10 @@ body {
         <div id="mic-level" style="height:100%;width:0%;background:var(--green);transition:width 0.1s;border-radius:3px"></div>
       </div>
     </div>
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Kamera</label>
+      <select id="cam-select" onchange="switchCameraDevice()" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:10px;outline:none;cursor:pointer"></select>
+    </div>
     <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
       <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Brusreducering</label>
       <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
@@ -5312,9 +5316,23 @@ async function toggleCamera() {
     return;
   }
   if (!currentVoiceChannel) return;
+
+  // Check if any camera exists
   try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    if (cams.length === 0) {
+      showCameraError('Ingen kamera hittades pa den har enheten');
+      return;
+    }
+  } catch(e) {}
+
+  try {
+    const videoConstraints = selectedCamId
+      ? { deviceId: { exact: selectedCamId }, width: { ideal: 640 }, height: { ideal: 480 } }
+      : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } };
     localCameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      video: videoConstraints,
       audio: false
     });
     isCameraOn = true;
@@ -5341,8 +5359,27 @@ async function toggleCamera() {
 
     videoTrack.onended = () => stopCamera();
   } catch(e) {
-    console.log('Kamera nekad eller ej tillganglig');
+    if (e.name === 'NotAllowedError') {
+      showCameraError('Kameran blockerad — tillat kamera i browsern');
+    } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
+      showCameraError('Ingen kamera hittades pa den har enheten');
+    } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+      showCameraError('Kameran anvands av ett annat program');
+    } else {
+      showCameraError('Kunde inte starta kameran');
+    }
   }
+}
+
+function showCameraError(msg) {
+  const chatBox = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.style.cssText = 'text-align:center;padding:8px 16px;margin:8px 0;font-family:var(--font-mono);font-size:12px;color:var(--red);background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);border-radius:8px';
+  div.textContent = msg;
+  chatBox.appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth' });
+  // Auto-remove after 8 seconds
+  setTimeout(() => { if (div.parentNode) div.remove(); }, 8000);
 }
 
 function stopCamera() {
@@ -5417,6 +5454,9 @@ catch(e) { selectedMicId = ''; }
 let selectedSpeakerId;
 try { selectedSpeakerId = localStorage.getItem('flow-speaker-id') || ''; }
 catch(e) { selectedSpeakerId = ''; }
+let selectedCamId;
+try { selectedCamId = localStorage.getItem('flow-cam-id') || ''; }
+catch(e) { selectedCamId = ''; }
 
 async function showAudioSettings() {
   openModal('audio-settings');
@@ -5434,8 +5474,10 @@ async function populateDevices() {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const micSelect = document.getElementById('mic-select');
     const speakerSelect = document.getElementById('speaker-select');
+    const camSelect = document.getElementById('cam-select');
     micSelect.innerHTML = '';
     speakerSelect.innerHTML = '';
+    camSelect.innerHTML = '';
 
     devices.filter(d => d.kind === 'audioinput').forEach((d, i) => {
       const opt = document.createElement('option');
@@ -5452,6 +5494,25 @@ async function populateDevices() {
       if (d.deviceId === selectedSpeakerId) opt.selected = true;
       speakerSelect.appendChild(opt);
     });
+
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    cams.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || ('Kamera ' + (i + 1));
+      if (d.deviceId === selectedCamId) opt.selected = true;
+      camSelect.appendChild(opt);
+    });
+
+    if (cams.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Ingen kamera hittades';
+      camSelect.appendChild(opt);
+      camSelect.style.color = 'var(--red)';
+    } else {
+      camSelect.style.color = '';
+    }
 
     if (speakerSelect.children.length === 0) {
       const opt = document.createElement('option');
@@ -5490,6 +5551,38 @@ async function switchMicrophone() {
     newProcessedTrack.enabled = !isMuted;
   } catch(e) {
     console.error('Kunde inte byta mikrofon:', e);
+  }
+}
+
+async function switchCameraDevice() {
+  const deviceId = document.getElementById('cam-select').value;
+  selectedCamId = deviceId;
+  localStorage.setItem('flow-cam-id', deviceId);
+
+  // If camera is active, swap to the new device live
+  if (isCameraOn && localCameraStream) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      });
+      const oldTrack = localCameraStream.getVideoTracks()[0];
+      const newTrack = newStream.getVideoTracks()[0];
+
+      // Replace track in all peer connections
+      for (const [peer, pc] of Object.entries(voicePeers)) {
+        const sender = pc.getSenders().find(s => s.track === oldTrack);
+        if (sender) await sender.replaceTrack(newTrack);
+      }
+
+      oldTrack.stop();
+      localCameraStream = newStream;
+      // Update local preview
+      showCameraFeed(username, localCameraStream, true);
+      newTrack.onended = () => stopCamera();
+    } catch(e) {
+      console.error('Kunde inte byta kamera:', e);
+    }
   }
 }
 
