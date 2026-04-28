@@ -1194,7 +1194,11 @@ body {
       <div id="profile-roles" style="display:flex;gap:4px;flex-wrap:wrap;margin:6px 0"></div>
       <div id="profile-bio" style="font-family:var(--font-mono);font-size:12px;color:var(--text-secondary);margin:10px 0;padding:10px;background:var(--bg-elevated);border-radius:8px;min-height:40px">Ingen bio annu</div>
       <div id="profile-joined" style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)">Medlem sedan ...</div>
-      <button onclick="document.getElementById('profile-modal').style.display='none'" style="width:100%;margin-top:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:8px;cursor:pointer">Stang</button>
+      <div id="profile-actions" style="display:none;margin-top:12px;display:flex;gap:8px">
+        <button id="profile-dm-btn" onclick="profileDM()" style="flex:1;background:var(--accent);border:none;border-radius:8px;color:#000;font-family:var(--font-mono);font-weight:600;font-size:12px;padding:8px;cursor:pointer">Skicka meddelande</button>
+        <button id="profile-friend-btn" onclick="profileFriend()" style="flex:1;background:var(--bg-elevated);border:1px solid var(--green);border-radius:8px;color:var(--green);font-family:var(--font-mono);font-weight:600;font-size:12px;padding:8px;cursor:pointer">Lagg till van</button>
+      </div>
+      <button onclick="document.getElementById('profile-modal').style.display='none'" style="width:100%;margin-top:8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-secondary);font-family:var(--font-mono);font-size:12px;padding:8px;cursor:pointer">Stang</button>
     </div>
   </div>
 </div>
@@ -1331,7 +1335,10 @@ function _renderAvatarEl(el, avatarUrl, initial, bgColor) {
   }
 }
 
+let _profileTarget = '';
+
 async function showProfile(targetUser) {
+  _profileTarget = targetUser;
   const modal = document.getElementById('profile-modal');
   modal.style.display = 'flex';
   // Set defaults while loading
@@ -1350,6 +1357,14 @@ async function showProfile(targetUser) {
   document.getElementById('profile-bio').textContent = 'Laddar...';
   document.getElementById('profile-joined').textContent = '';
   document.getElementById('profile-roles').innerHTML = '';
+  // Show/hide action buttons
+  const actionsDiv = document.getElementById('profile-actions');
+  if (targetUser === username) {
+    actionsDiv.style.display = 'none';
+  } else {
+    actionsDiv.style.display = 'flex';
+    updateProfileFriendBtn(targetUser);
+  }
   try {
     const res = await fetch('/api/profile/' + encodeURIComponent(targetUser)).then(r => r.json());
     if (res.ok) {
@@ -1385,6 +1400,63 @@ async function showProfile(targetUser) {
   } catch(e) {
     document.getElementById('profile-bio').textContent = 'Kunde inte ladda profil';
   }
+}
+
+function updateProfileFriendBtn(targetUser) {
+  const btn = document.getElementById('profile-friend-btn');
+  const isFriend = friendsData.friends.some(f => f.username === targetUser);
+  const isPending = friendsData.outgoing.some(f => f.username === targetUser);
+  const isIncoming = friendsData.incoming.some(f => f.username === targetUser);
+  if (isFriend) {
+    btn.textContent = 'Vanner \u2714';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+    btn.onclick = () => { removeFriend(targetUser); updateProfileFriendBtn(targetUser); };
+  } else if (isPending) {
+    btn.textContent = 'Forfragan skickad';
+    btn.style.color = 'var(--text-muted)';
+    btn.style.borderColor = 'var(--border)';
+    btn.onclick = null;
+  } else if (isIncoming) {
+    btn.textContent = 'Acceptera van';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+    btn.onclick = async () => { await acceptFriend(targetUser); await refreshFriendsData(); updateProfileFriendBtn(targetUser); };
+  } else {
+    btn.textContent = 'Lagg till van';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+    btn.onclick = async () => {
+      const res = await fetch('/api/friends/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author: username, token: userToken, target: targetUser }),
+      }).then(r => r.json());
+      if (res.ok) {
+        await refreshFriendsData();
+        updateProfileFriendBtn(targetUser);
+      }
+    };
+  }
+}
+
+function profileDM() {
+  document.getElementById('profile-modal').style.display = 'none';
+  openDM(_profileTarget);
+}
+
+function profileFriend() {
+  // handled by onclick set in updateProfileFriendBtn
+}
+
+async function refreshFriendsData() {
+  try {
+    const data = await fetch('/api/friends?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
+    if (data.ok) {
+      friendsData = data;
+      pendingFriendCount = (data.incoming || []).length;
+    }
+  } catch(e) {}
 }
 
 function showEditProfile() {
