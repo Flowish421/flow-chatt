@@ -126,7 +126,7 @@
 
 ### Lang sikt
 - [ ] End-to-end kryptering (E2EE) for DMs
-- [ ] Bot/webhook-system (integrationer)
+- [x] Bot/webhook-system (integrationer) — se nedan
 - [ ] Anpassade emojis per grupp
 - [ ] Server-side rendering for SEO/preview
 - [ ] Mobilapp (PWA eller React Native)
@@ -134,6 +134,25 @@
 - [ ] Multi-server federation (Quiver ↔ Quiver)
 
 ---
+
+### Bot / Webhook-integration
+- Bot-konton via `BOT_TOKENS` env var (kommaseparerade `namn:hemlighet` par)
+- `POST /api/bot/message` — bot skickar meddelande till valfri kanal
+- Bot-meddelanden visas med lila `BOT` badge i chatten
+- `role: "bot"` i meddelandedata (separerat fran user/system)
+- HMAC-SHA256 auth for bot-credentials (timing-safe jamforelse)
+- Outgoing webhooks via `WEBHOOK_URL` env var — alla chat_message events POSTas
+- `WEBHOOK_SECRET` for signerade webhooks (X-Webhook-Signature header)
+- Webhook ar fire-and-forget i bakgrundstrad (kraschar aldrig chatten)
+- Bot-meddelanden triggar INTE outgoing webhook (forhindrar loopar)
+- Admin kan lista registrerade bots via `POST /api/bot/list`
+
+**Env-variabler:**
+```
+BOT_TOKENS=gustave:hemligt123,kairos:annattoken
+WEBHOOK_URL=http://localhost:37778/api/intake
+WEBHOOK_SECRET=delad-hemlighet
+```
 
 ## Teknik
 
