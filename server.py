@@ -304,22 +304,19 @@ def check_room_access(db, room_name, username=None):
     if group_id:
         if vis == "system":
             return room, "system"
+        with group_visibility_lock:
+            gvis = group_visibility_cache.get(group_id, "public")
         if not username:
-            # For group channels in public groups, allow read; private groups deny
-            with group_visibility_lock:
-                gvis = group_visibility_cache.get(group_id, "public")
             if gvis == "private":
                 return None, None
             return room, "read"
         # Check group membership
         gm = db.execute("SELECT role FROM group_members WHERE group_id = ? AND username = ?", (group_id, username)).fetchone()
         if not gm:
-            # Not a group member
-            with group_visibility_lock:
-                gvis = group_visibility_cache.get(group_id, "public")
             if gvis == "private":
                 return None, None
-            return room, "read"
+            # Public group — non-members can write (open access)
+            return room, "write"
         # Group member — check required_role for the channel
         user_role = gm["role"]
         required_role = room["required_role"] if "required_role" in room.keys() else "member"
@@ -328,19 +325,22 @@ def check_room_access(db, room_name, username=None):
         # Owner and admin always bypass role requirements
         if user_role in ("owner", "admin"):
             return room, "owner" if user_role == "owner" else "write"
-        # Check built-in roles first
+        # Default "member" role — all group members can write
+        if required_role == "member":
+            return room, "write"
+        # Check built-in roles
         if _group_role_level(user_role) >= _group_role_level(required_role):
             return room, "write"
         # Check custom role: required_role might be a custom role ID
-        if required_role not in ("member", "admin", "owner"):
+        if required_role not in ("admin", "owner"):
             has_custom = db.execute(
                 "SELECT 1 FROM user_roles WHERE group_id = ? AND username = ? AND role_id = ?",
                 (group_id, username, required_role)
             ).fetchone()
             if has_custom:
                 return room, "write"
-            # User does NOT have the required custom role — hide channel entirely
-            return None, None
+            # User does NOT have the required custom role — read only
+            return room, "read"
         return room, "read"
 
     if vis == "system":
@@ -1739,25 +1739,30 @@ class ChatHandler(BaseHTTPRequestHandler):
                             chd["accessible"] = True
                             chd["is_member"] = True
                             chd["user_role"] = user_role
+                        # Default member role or user has sufficient role — open access
+                        elif req_role == "member":
+                            chd["accessible"] = True
+                            chd["is_member"] = True
+                            chd["user_role"] = user_role or "member"
                         # If user has sufficient built-in role level
                         elif user_role and _group_role_level(user_role) >= _group_role_level(req_role):
                             chd["accessible"] = True
                             chd["is_member"] = True
                             chd["user_role"] = user_role
                         # Check custom role requirement
-                        elif req_role not in ("member", "admin", "owner") and req_role in user_custom_role_ids:
+                        elif req_role not in ("admin", "owner") and req_role in user_custom_role_ids:
                             chd["accessible"] = True
                             chd["is_member"] = True
                             chd["user_role"] = user_role
                         elif req_role not in ("member", "admin", "owner"):
-                            # Channel requires a custom role the user doesn't have — hide it
-                            continue
-                        elif g["visibility"] == "public":
+                            # Channel requires a custom role the user doesn't have — read only
                             chd["accessible"] = False
                             chd["is_member"] = False
                             chd["user_role"] = None
                         else:
-                            continue  # Private group, user doesn't have access to this channel
+                            chd["accessible"] = False
+                            chd["is_member"] = False
+                            chd["user_role"] = None
                         # Voice channels: include who's in the room
                         if chd["channel_type"] == "voice":
                             chd["voice_members"] = voice_map.get(chd["name"], [])
