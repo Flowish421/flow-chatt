@@ -484,8 +484,17 @@ class PgConnection:
 
 
 def init_db():
+    global USE_PG, DATABASE_URL
     if USE_PG:
-        conn = PgConnection(DATABASE_URL)
+        try:
+            conn = PgConnection(DATABASE_URL)
+        except Exception as e:
+            sys.stderr.write(f"WARNING: PostgreSQL connection failed ({e}), falling back to SQLite\n")
+            USE_PG = False
+            DATABASE_URL = ""
+            conn = sqlite3.connect(DB_PATH)
+            _harden_conn(conn)
+            conn.execute("PRAGMA journal_mode=WAL")
     else:
         conn = sqlite3.connect(DB_PATH)
         _harden_conn(conn)
