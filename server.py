@@ -32,8 +32,8 @@ from queue import Queue, Empty
 from socketserver import ThreadingMixIn
 
 if os.environ.get("DATABASE_URL"):
-    import psycopg2
-    import psycopg2.extras
+    import psycopg
+    from psycopg.rows import dict_row
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Render gives postgres:// but psycopg2 requires postgresql://
@@ -436,12 +436,11 @@ def _harden_conn(conn):
 
 
 class PgConnection:
-    """Wrapper around psycopg2 that mimics sqlite3 interface.
+    """Wrapper around psycopg3 that mimics sqlite3 interface.
     Translates ? -> %s and INSERT OR IGNORE/REPLACE -> ON CONFLICT syntax."""
 
     def __init__(self, dsn):
-        self._conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
-        self._conn.autocommit = False
+        self._conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=False)
 
     def execute(self, sql, params=None):
         # Translate ? -> %s
