@@ -2612,7 +2612,7 @@ function makeChannelRow(c, type) {
   const row = document.createElement('div');
   row.className = 'ch-row' + (c.name === currentChannel ? ' active' : '');
   const isLocked = c.locked && !c.is_member;
-  if (!c.is_member && type !== 'pin') row.style.opacity = isLocked ? '0.6' : '0.5';
+  if (isLocked && type !== 'pin') row.style.opacity = '0.6';
   row.dataset.channel = c.name;
 
   row.addEventListener('click', () => switchChannel(c.name));

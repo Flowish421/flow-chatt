@@ -315,7 +315,16 @@ def check_room_access(db, room_name, username=None):
         if not gm:
             if gvis == "private":
                 return None, None
-            # Public group — non-members can write (open access)
+            # Public group — auto-join as member
+            try:
+                db.execute(
+                    "INSERT INTO group_members (group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                    (group_id, username, datetime.now(timezone.utc).isoformat())
+                )
+                db.commit()
+                group_cache_add_member(group_id, username)
+            except Exception:
+                pass  # Already a member or conflict
             return room, "write"
         # Group member — check required_role for the channel
         user_role = gm["role"]
