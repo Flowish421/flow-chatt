@@ -36,6 +36,9 @@ if os.environ.get("DATABASE_URL"):
     import psycopg2.extras
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# Render gives postgres:// but psycopg2 requires postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 DB_PATH = os.environ.get("CHAT_DB", "chat.db")
 USE_PG = bool(DATABASE_URL)
 PORT = int(os.environ.get("PORT", "8080"))
