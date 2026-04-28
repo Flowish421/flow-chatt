@@ -31,7 +31,13 @@ from datetime import datetime, timezone
 from queue import Queue, Empty
 from socketserver import ThreadingMixIn
 
+if os.environ.get("DATABASE_URL"):
+    import psycopg2
+    import psycopg2.extras
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 DB_PATH = os.environ.get("CHAT_DB", "chat.db")
+USE_PG = bool(DATABASE_URL)
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 MAX_BODY = 5 * 1024 * 1024  # 5MB max for image uploads
@@ -408,9 +414,12 @@ def prune_old_messages(db):
 
 def _harden_conn(conn):
     """Disable dangerous SQLite features on a connection."""
+    if USE_PG:
+        return
     try:
         conn.execute("PRAGMA trusted_schema=OFF")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     def _authorizer(action, arg1, arg2, db_name, trigger):
         SQLITE_ATTACH = 24
@@ -423,10 +432,62 @@ def _harden_conn(conn):
     conn.set_authorizer(_authorizer)
 
 
+class PgConnection:
+    """Wrapper around psycopg2 that mimics sqlite3 interface.
+    Translates ? -> %s and INSERT OR IGNORE/REPLACE -> ON CONFLICT syntax."""
+
+    def __init__(self, dsn):
+        self._conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        self._conn.autocommit = False
+
+    def execute(self, sql, params=None):
+        # Translate ? -> %s
+        sql = sql.replace("?", "%s")
+
+        # Handle INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+        if "INSERT OR IGNORE" in sql:
+            sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+            sql = sql.rstrip()
+            if not sql.endswith("ON CONFLICT DO NOTHING"):
+                sql += " ON CONFLICT DO NOTHING"
+
+        # Handle INSERT OR REPLACE -> INSERT ... ON CONFLICT DO UPDATE
+        if "INSERT OR REPLACE" in sql:
+            sql = sql.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+            sql = sql.rstrip()
+            if "voice_state" in sql:
+                sql += " ON CONFLICT (channel, username) DO UPDATE SET joined_at = EXCLUDED.joined_at"
+            elif "join_requests" in sql:
+                sql += " ON CONFLICT (group_id, username) DO UPDATE SET status = EXCLUDED.status, created_at = EXCLUDED.created_at"
+
+        # LIKE -> ILIKE for case-insensitive search
+        sql = sql.replace(" LIKE ", " ILIKE ")
+
+        cur = self._conn.cursor()
+        try:
+            cur.execute(sql, params or ())
+        except Exception:
+            self._conn.rollback()
+            raise
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+    def rollback(self):
+        self._conn.rollback()
+
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    _harden_conn(conn)
-    conn.execute("PRAGMA journal_mode=WAL")
+    if USE_PG:
+        conn = PgConnection(DATABASE_URL)
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        _harden_conn(conn)
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
@@ -440,7 +501,8 @@ def init_db():
     """)
     try:
         conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS channels (
@@ -457,7 +519,8 @@ def init_db():
     for col, default in [("visibility", "'public'"), ("owner", "NULL"), ("channel_type", "'text'")]:
         try:
             conn.execute(f"ALTER TABLE channels ADD COLUMN {col} TEXT DEFAULT {default}")
-        except sqlite3.OperationalError:
+        except Exception:
+            if USE_PG: conn.rollback()
             pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS voice_state (
@@ -539,12 +602,14 @@ def init_db():
     for col, default in [("group_id", "NULL"), ("required_role", "'member'")]:
         try:
             conn.execute(f"ALTER TABLE channels ADD COLUMN {col} TEXT DEFAULT {default}")
-        except sqlite3.OperationalError:
+        except Exception:
+            if USE_PG: conn.rollback()
             pass
     # Migration: add group_id to invites
     try:
         conn.execute("ALTER TABLE invites ADD COLUMN group_id TEXT DEFAULT NULL")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     # --- Custom roles tables ---
     conn.execute("""
@@ -586,27 +651,32 @@ def init_db():
     # Migration: add email column to users
     try:
         conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     # Migration: add password column to users
     try:
         conn.execute("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     # Migration: add profile columns to users
     for col, default in [("bio", "''"), ("avatar_color", "'#4f8ff7'"), ("banner_color", "'#1a1e26'")]:
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
-        except sqlite3.OperationalError:
+        except Exception:
+            if USE_PG: conn.rollback()
             pass
     # Migration: add avatar (profile picture) column to users
     try:
         conn.execute("ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
-    except sqlite3.OperationalError:
+    except Exception:
+        if USE_PG: conn.rollback()
         pass
     # Pending verification codes table
     conn.execute("""
@@ -668,7 +738,8 @@ def init_db():
     for col, default in [("icon", "''"), ("background", "''")]:
         try:
             conn.execute(f"ALTER TABLE groups ADD COLUMN {col} TEXT DEFAULT {default}")
-        except sqlite3.OperationalError:
+        except Exception:
+            if USE_PG: conn.rollback()
             pass
     # Seed the global chat room "allmant" (public, writable by all)
     conn.execute("""
@@ -693,6 +764,8 @@ def now():
 
 
 def get_db():
+    if USE_PG:
+        return PgConnection(DATABASE_URL)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     _harden_conn(conn)
@@ -4693,7 +4766,9 @@ if __name__ == "__main__":
     except (OSError, ValueError):
         pass  # SIGTERM not available on some platforms (e.g. Windows services)
 
+    db_info = f"PostgreSQL ({DATABASE_URL.split('@')[-1].split('/')[0] if '@' in DATABASE_URL else 'remote'})" if USE_PG else f"SQLite ({DB_PATH})"
     print(f"Quiver running on http://{HOST}:{PORT}")
+    print(f"Database: {db_info}")
     print(f"Share with friends: open the URL above")
     try:
         server.serve_forever()
