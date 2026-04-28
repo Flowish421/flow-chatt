@@ -652,6 +652,18 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_msg_conv ON dm_messages(conversation_id, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_conv_user1 ON dm_conversations(user1)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_conv_user2 ON dm_conversations(user2)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS friends (
+            user1 TEXT NOT NULL,
+            user2 TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(user1, user2)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_friends_user1 ON friends(user1)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_friends_user2 ON friends(user2)")
     # Migration: add icon and background to groups
     for col, default in [("icon", "''"), ("background", "''")]:
         try:
@@ -1803,6 +1815,54 @@ class ChatHandler(BaseHTTPRequestHandler):
             for u in users:
                 u["online"] = u["username"] in online_names
             self.send_json({"ok": True, "users": users})
+            return
+
+        # API: list friends + pending requests — GET /api/friends?user=X&token=T
+        if path == "/api/friends":
+            req_user = params.get("user", [None])[0]
+            req_token = params.get("token", [None])[0]
+            if not req_user or not req_token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (req_user, req_token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                rows = db.execute("""
+                    SELECT f.user1, f.user2, f.status, f.requested_by, f.created_at,
+                           u.avatar_color, u.avatar, u.bio
+                    FROM friends f
+                    JOIN users u ON u.username = CASE WHEN f.user1 = ? THEN f.user2 ELSE f.user1 END
+                    WHERE f.user1 = ? OR f.user2 = ?
+                """, (req_user, req_user, req_user)).fetchall()
+            finally:
+                db.close()
+            with sse_lock:
+                online_names = set(c[2] for c in sse_clients if len(c) > 2 and c[2] != "anonymous")
+            with ws_lock:
+                online_names |= set(c.username for c in ws_clients if c.alive and c.username != "anonymous")
+            friends = []
+            incoming = []
+            outgoing = []
+            for r in rows:
+                other = r["user2"] if r["user1"] == req_user else r["user1"]
+                entry = {
+                    "username": other,
+                    "avatar_color": r["avatar_color"] or "#4f8ff7",
+                    "avatar": r["avatar"] or "",
+                    "bio": r["bio"] or "",
+                    "online": other in online_names,
+                    "since": r["created_at"],
+                }
+                if r["status"] == "accepted":
+                    friends.append(entry)
+                elif r["status"] == "pending" and r["requested_by"] != req_user:
+                    incoming.append(entry)
+                elif r["status"] == "pending" and r["requested_by"] == req_user:
+                    outgoing.append(entry)
+            self.send_json({"ok": True, "friends": friends, "incoming": incoming, "outgoing": outgoing})
             return
 
         # API: get game state — GET /api/group/{id}/game
@@ -4054,6 +4114,132 @@ class ChatHandler(BaseHTTPRequestHandler):
             send_to_user(author, msg_data)
             send_to_user(other_user, msg_data)
             self.send_json({"ok": True, "id": msg_id, "conversation_id": conv_id, "created_at": ts})
+            return
+
+        # ===== FRIENDS ENDPOINTS =====
+
+        # API: send friend request — POST /api/friends/request { author, token, target }
+        if path == "/api/friends/request":
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "")
+            target = body.get("target", "").strip()[:20]
+            if not author or not token:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            if not target or target == author:
+                self.send_json({"ok": False, "error": "ogiltigt anvandarnamn"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                target_exists = db.execute("SELECT username FROM users WHERE username = ?", (target,)).fetchone()
+                if not target_exists:
+                    self.send_json({"ok": False, "error": "Anvandaren finns inte"}, 404)
+                    return
+                # Normalize order for consistent storage
+                u1, u2 = (author, target) if author < target else (target, author)
+                existing = db.execute("SELECT status, requested_by FROM friends WHERE user1 = ? AND user2 = ?", (u1, u2)).fetchone()
+                if existing:
+                    if existing["status"] == "accepted":
+                        self.send_json({"ok": False, "error": "Ni ar redan vanner"}, 400)
+                        return
+                    if existing["requested_by"] == author:
+                        self.send_json({"ok": False, "error": "Forfragan redan skickad"}, 400)
+                        return
+                    # Other person already sent request to us — auto-accept
+                    db.execute("UPDATE friends SET status = 'accepted' WHERE user1 = ? AND user2 = ?", (u1, u2))
+                    db.commit()
+                    send_to_user(target, {"event_type": "friend_accepted", "username": author})
+                    send_to_user(author, {"event_type": "friend_accepted", "username": target})
+                    self.send_json({"ok": True, "auto_accepted": True})
+                    return
+                ts = datetime.now(timezone.utc).isoformat()
+                db.execute("INSERT INTO friends (user1, user2, status, requested_by, created_at) VALUES (?, ?, 'pending', ?, ?)",
+                           (u1, u2, author, ts))
+                db.commit()
+            finally:
+                db.close()
+            send_to_user(target, {"event_type": "friend_request", "username": author})
+            self.send_json({"ok": True})
+            return
+
+        # API: accept friend request — POST /api/friends/accept { author, token, target }
+        if path == "/api/friends/accept":
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "")
+            target = body.get("target", "").strip()[:20]
+            if not author or not token or not target:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                u1, u2 = (author, target) if author < target else (target, author)
+                row = db.execute("SELECT status, requested_by FROM friends WHERE user1 = ? AND user2 = ?", (u1, u2)).fetchone()
+                if not row or row["status"] != "pending":
+                    self.send_json({"ok": False, "error": "Ingen vanforfragan hittades"}, 404)
+                    return
+                if row["requested_by"] == author:
+                    self.send_json({"ok": False, "error": "Du kan inte acceptera din egen forfragan"}, 400)
+                    return
+                db.execute("UPDATE friends SET status = 'accepted' WHERE user1 = ? AND user2 = ?", (u1, u2))
+                db.commit()
+            finally:
+                db.close()
+            send_to_user(target, {"event_type": "friend_accepted", "username": author})
+            send_to_user(author, {"event_type": "friend_accepted", "username": target})
+            self.send_json({"ok": True})
+            return
+
+        # API: decline/cancel friend request — POST /api/friends/decline { author, token, target }
+        if path == "/api/friends/decline":
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "")
+            target = body.get("target", "").strip()[:20]
+            if not author or not token or not target:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                u1, u2 = (author, target) if author < target else (target, author)
+                db.execute("DELETE FROM friends WHERE user1 = ? AND user2 = ? AND status = 'pending'", (u1, u2))
+                db.commit()
+            finally:
+                db.close()
+            self.send_json({"ok": True})
+            return
+
+        # API: remove friend — POST /api/friends/remove { author, token, target }
+        if path == "/api/friends/remove":
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "")
+            target = body.get("target", "").strip()[:20]
+            if not author or not token or not target:
+                self.send_json({"ok": False, "error": "auth required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                u1, u2 = (author, target) if author < target else (target, author)
+                db.execute("DELETE FROM friends WHERE user1 = ? AND user2 = ?", (u1, u2))
+                db.commit()
+            finally:
+                db.close()
+            send_to_user(target, {"event_type": "friend_removed", "username": author})
+            self.send_json({"ok": True})
             return
 
         # API: update group settings — POST /api/group/{id}/settings

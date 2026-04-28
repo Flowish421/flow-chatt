@@ -707,6 +707,32 @@ body {
 .dm-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dm-preview { font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Friends */
+.friend-tabs { display:flex;gap:0;margin:0 10px 6px;border-bottom:1px solid var(--border); }
+.friend-tab { flex:1;padding:6px 0;text-align:center;font-family:var(--font-mono);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:color 0.15s,border-color 0.15s; }
+.friend-tab:hover { color:var(--text-primary); }
+.friend-tab.active { color:var(--accent);border-bottom-color:var(--accent); }
+.friend-tab .badge { display:inline-block;background:var(--red);color:#fff;border-radius:8px;font-size:9px;padding:1px 5px;margin-left:4px;vertical-align:top; }
+.friend-row { display:flex;align-items:center;padding:6px 10px;gap:8px;border-radius:6px;margin-bottom:2px;font-family:var(--font-mono);font-size:13px;color:var(--text-secondary);transition:background 0.15s; }
+.friend-row:hover { background:rgba(88,166,255,0.08); }
+.friend-actions { margin-left:auto;display:flex;gap:4px; }
+.friend-actions button { background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-family:var(--font-mono);font-size:10px;cursor:pointer;color:var(--text-muted);transition:all 0.15s; }
+.friend-actions .accept { color:var(--green);border-color:var(--green); }
+.friend-actions .accept:hover { background:rgba(52,211,153,0.15); }
+.friend-actions .decline { color:var(--red);border-color:var(--red); }
+.friend-actions .decline:hover { background:rgba(248,113,113,0.15); }
+.friend-actions .dm-btn { color:var(--accent);border-color:var(--accent); }
+.friend-actions .dm-btn:hover { background:rgba(88,166,255,0.15); }
+.friend-online-dot { width:8px;height:8px;border-radius:50%;flex-shrink:0; }
+.friend-online-dot.on { background:var(--green); }
+.friend-online-dot.off { background:var(--text-muted); }
+.add-friend-bar { display:flex;gap:6px;padding:6px 10px;margin-bottom:6px; }
+.add-friend-bar input { flex:1;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:6px 10px;outline:none; }
+.add-friend-bar input:focus { border-color:var(--accent); }
+.add-friend-bar button { background:var(--accent);border:none;border-radius:6px;color:#000;font-family:var(--font-mono);font-size:11px;font-weight:600;padding:6px 12px;cursor:pointer; }
+.add-friend-bar button:hover { opacity:0.85; }
+#add-friend-status { padding:0 10px;font-family:var(--font-mono);font-size:11px;margin-bottom:4px;min-height:16px; }
+
 /* Empty state for groups */
 .empty-state {
   padding: 16px; text-align: center; font-family: var(--font-mono);
@@ -1834,6 +1860,14 @@ async function startChat() {
     currentGroup = null;
   }
   switchChannel(currentChannel);
+  // Fetch pending friend requests count for badge
+  fetch('/api/friends?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken))
+    .then(r => r.json()).then(data => {
+      if (data.ok) {
+        pendingFriendCount = (data.incoming || []).length;
+        friendsData = data;
+      }
+    }).catch(() => {});
   setupDragDrop();
 
   // Mobile: toggle sidebar on header click
@@ -1961,6 +1995,10 @@ function renderGroupSidebar(groupId) {
 }
 
 // === DM System ===
+let dmTab = 'dms';  // 'dms' or 'friends'
+let friendsData = { friends: [], incoming: [], outgoing: [] };
+let pendingFriendCount = 0;
+
 async function loadDMList() {
   const list = document.getElementById('channel-list');
   list.innerHTML = '';
@@ -1972,6 +2010,21 @@ async function loadDMList() {
     div.className = 'group-divider';
     list.appendChild(div);
   }
+  // Tabs: DM / Vanner
+  const tabs = document.createElement('div');
+  tabs.className = 'friend-tabs';
+  tabs.innerHTML = '<div class="friend-tab' + (dmTab === 'dms' ? ' active' : '') + '" onclick="dmTab=\'dms\';loadDMList()">Meddelanden</div>'
+    + '<div class="friend-tab' + (dmTab === 'friends' ? ' active' : '') + '" onclick="dmTab=\'friends\';loadDMList()">Vanner' + (pendingFriendCount > 0 ? ' <span class=\"badge\">' + pendingFriendCount + '</span>' : '') + '</div>';
+  list.appendChild(tabs);
+
+  if (dmTab === 'friends') {
+    await renderFriendsTab(list);
+  } else {
+    await renderDMTab(list);
+  }
+}
+
+async function renderDMTab(list) {
   // DM header
   const header = document.createElement('div');
   header.className = 'dm-section-header';
@@ -1992,6 +2045,167 @@ async function loadDMList() {
       });
     }
   } catch(e) {}
+}
+
+async function renderFriendsTab(list) {
+  // Add friend bar
+  const bar = document.createElement('div');
+  bar.className = 'add-friend-bar';
+  bar.innerHTML = '<input id="add-friend-input" type="text" placeholder="Anvandarnamn..." maxlength="20" onkeydown="if(event.key===\'Enter\')sendFriendRequest()">'
+    + '<button onclick="sendFriendRequest()">Lagg till</button>';
+  list.appendChild(bar);
+  const status = document.createElement('div');
+  status.id = 'add-friend-status';
+  list.appendChild(status);
+
+  // Fetch friends
+  try {
+    const data = await fetch('/api/friends?user=' + encodeURIComponent(username) + '&token=' + encodeURIComponent(userToken)).then(r => r.json());
+    if (data.ok) {
+      friendsData = data;
+      pendingFriendCount = (data.incoming || []).length;
+    }
+  } catch(e) {}
+
+  // Incoming requests
+  if (friendsData.incoming.length > 0) {
+    const h = document.createElement('div');
+    h.className = 'dm-section-header';
+    h.textContent = 'Inkommande (' + friendsData.incoming.length + ')';
+    list.appendChild(h);
+    friendsData.incoming.forEach(f => list.appendChild(makeFriendRow(f, 'incoming')));
+  }
+
+  // Outgoing requests
+  if (friendsData.outgoing.length > 0) {
+    const h = document.createElement('div');
+    h.className = 'dm-section-header';
+    h.textContent = 'Skickade (' + friendsData.outgoing.length + ')';
+    list.appendChild(h);
+    friendsData.outgoing.forEach(f => list.appendChild(makeFriendRow(f, 'outgoing')));
+  }
+
+  // Friends list
+  const h = document.createElement('div');
+  h.className = 'dm-section-header';
+  h.textContent = 'Vanner (' + friendsData.friends.length + ')';
+  list.appendChild(h);
+
+  if (friendsData.friends.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = '<div class="empty-state-icon">👥</div><div>Inga vanner annu</div><div style="font-size:10px;margin-top:4px;color:var(--text-muted)">Skriv ett anvandarnamn ovan for att lagga till</div>';
+    list.appendChild(empty);
+  } else {
+    // Online first
+    const sorted = [...friendsData.friends].sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+    sorted.forEach(f => list.appendChild(makeFriendRow(f, 'friend')));
+  }
+}
+
+function makeFriendRow(f, type) {
+  const row = document.createElement('div');
+  row.className = 'friend-row';
+  const avatar = document.createElement('div');
+  avatar.className = 'dm-avatar';
+  avatar.style.background = f.avatar_color || '#4f8ff7';
+  if (f.avatar) {
+    avatar.innerHTML = '<img src="' + f.avatar + '">';
+  } else {
+    avatar.textContent = (f.username || '?')[0].toUpperCase();
+  }
+  row.appendChild(avatar);
+
+  const dot = document.createElement('div');
+  dot.className = 'friend-online-dot ' + (f.online ? 'on' : 'off');
+  row.appendChild(dot);
+
+  const name = document.createElement('div');
+  name.className = 'dm-name';
+  name.textContent = f.username;
+  name.style.flex = '1';
+  row.appendChild(name);
+
+  const actions = document.createElement('div');
+  actions.className = 'friend-actions';
+
+  if (type === 'incoming') {
+    actions.innerHTML = '<button class="accept" onclick="event.stopPropagation();acceptFriend(\'' + f.username + '\')">Acceptera</button>'
+      + '<button class="decline" onclick="event.stopPropagation();declineFriend(\'' + f.username + '\')">Neka</button>';
+  } else if (type === 'outgoing') {
+    actions.innerHTML = '<button class="decline" onclick="event.stopPropagation();declineFriend(\'' + f.username + '\')">Avbryt</button>';
+  } else {
+    actions.innerHTML = '<button class="dm-btn" onclick="event.stopPropagation();openDM(\'' + f.username + '\')">DM</button>'
+      + '<button class="decline" onclick="event.stopPropagation();removeFriend(\'' + f.username + '\')">Ta bort</button>';
+  }
+  row.appendChild(actions);
+
+  if (type === 'friend') {
+    row.style.cursor = 'pointer';
+    row.onclick = () => showProfile(f.username);
+  }
+
+  return row;
+}
+
+async function sendFriendRequest() {
+  const input = document.getElementById('add-friend-input');
+  const status = document.getElementById('add-friend-status');
+  const target = input.value.trim();
+  if (!target) return;
+  try {
+    const res = await fetch('/api/friends/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, target }),
+    }).then(r => r.json());
+    if (res.ok) {
+      status.style.color = 'var(--green)';
+      status.textContent = res.auto_accepted ? 'Ni ar nu vanner!' : 'Vanforfragan skickad!';
+      input.value = '';
+      setTimeout(() => loadDMList(), 1000);
+    } else {
+      status.style.color = 'var(--red)';
+      status.textContent = res.error || 'Kunde inte skicka';
+    }
+  } catch(e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Serverfel';
+  }
+}
+
+async function acceptFriend(target) {
+  try {
+    await fetch('/api/friends/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, target }),
+    });
+  } catch(e) {}
+  loadDMList();
+}
+
+async function declineFriend(target) {
+  try {
+    await fetch('/api/friends/decline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, target }),
+    });
+  } catch(e) {}
+  loadDMList();
+}
+
+async function removeFriend(target) {
+  if (!confirm('Ta bort ' + target + ' som van?')) return;
+  try {
+    await fetch('/api/friends/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: username, token: userToken, target }),
+    });
+  } catch(e) {}
+  loadDMList();
 }
 
 function makeDMRow(conv) {
@@ -3013,6 +3227,29 @@ function handleEvent(d) {
   }
   if (d.type === 'camera_stop' && d.from !== username) {
     removeCameraFeed(d.from);
+    return;
+  }
+  // Friend events
+  if (d.event_type === 'friend_request') {
+    pendingFriendCount++;
+    // Update badge on friends tab if visible
+    if (dmTab === 'friends' || !currentGroup) loadDMList();
+    // Show notification in chat
+    const chatBox = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.style.cssText = 'text-align:center;padding:8px 16px;margin:8px 0;font-family:var(--font-mono);font-size:12px;color:var(--accent);background:rgba(88,166,255,0.1);border:1px solid rgba(88,166,255,0.2);border-radius:8px;cursor:pointer';
+    div.textContent = d.username + ' vill bli din van!';
+    div.onclick = () => { dmTab = 'friends'; switchView('dms'); };
+    chatBox.appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+  if (d.event_type === 'friend_accepted') {
+    if (dmTab === 'friends') loadDMList();
+    return;
+  }
+  if (d.event_type === 'friend_removed') {
+    if (dmTab === 'friends') loadDMList();
     return;
   }
   // Voice channel events
