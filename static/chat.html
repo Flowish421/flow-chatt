@@ -213,6 +213,7 @@ body {
   padding: 1px 5px; border-radius: 3px; margin-left: 4px;
   vertical-align: middle; letter-spacing: 0.5px;
 }
+.msg .content .cmd { color: var(--purple); font-family: var(--font-mono); font-weight: 500; }
 .msg .content { color: var(--text-primary); word-break: break-word; }
 .msg .content code { background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
 .msg-system {
@@ -2988,6 +2989,33 @@ function appendMsg(author, content, role, timestamp, attachments, msgId, reactio
       const contentSpan = div.querySelector('.content');
       if (contentSpan) contentSpan.innerHTML = fmtContent(content);
     });
+  }
+
+  // Render HTML artifacts from bot (inline iframe preview)
+  if (role === 'bot' && content && (content.includes('<!DOCTYPE') || content.includes('<html'))) {
+    const previewWrap = document.createElement('div');
+    previewWrap.style.cssText = 'margin:8px 0 4px 36px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-elevated)';
+    const toolbar = document.createElement('div');
+    toolbar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--bg-surface);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)';
+    toolbar.innerHTML = '<span>HTML Projection</span>';
+    const expandBtn = document.createElement('button');
+    expandBtn.textContent = 'Fullskarm';
+    expandBtn.style.cssText = 'background:var(--purple);color:var(--bg-deep);border:none;border-radius:4px;padding:3px 8px;font-size:10px;font-weight:700;cursor:pointer';
+    toolbar.appendChild(expandBtn);
+    previewWrap.appendChild(toolbar);
+    const iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-scripts';
+    iframe.style.cssText = 'width:100%;height:300px;border:none;background:#fff';
+    iframe.srcdoc = content;
+    previewWrap.appendChild(iframe);
+    expandBtn.onclick = () => {
+      if (iframe.style.height === '300px') { iframe.style.height = '80vh'; expandBtn.textContent = 'Minimera'; }
+      else { iframe.style.height = '300px'; expandBtn.textContent = 'Fullskarm'; }
+    };
+    div.appendChild(previewWrap);
+    // Hide the raw HTML from the text content area
+    const rawSpan = div.querySelector('.content');
+    if (rawSpan) rawSpan.style.display = 'none';
   }
 
   // Render attachments

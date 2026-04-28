@@ -65,6 +65,8 @@ for pair in BOT_TOKENS_RAW.split(","):
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 # WEBHOOK_SECRET: shared secret for HMAC-SHA256 signature on outgoing webhooks
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+# DISPATCH_URL: cortex dispatch endpoint for /create commands (e.g. http://localhost:37778/api/dispatch)
+DISPATCH_URL = os.environ.get("DISPATCH_URL", "")
 
 DISPOSABLE_DOMAINS = {
     "mailinator.com","guerrillamail.com","guerrillamail.de","tempmail.com","throwaway.email",
@@ -1109,6 +1111,52 @@ def webhook_dispatch(event_data):
             urllib.request.urlopen(req, timeout=5)
         except Exception:
             pass  # fail-open: webhook down should never break chat
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
+
+
+def dispatch_create(prompt, channel, author):
+    """Forward /create command to cortex dispatch endpoint. Non-blocking.
+    Cortex runs the session, then POSTs the result back via bot webhook."""
+    if not DISPATCH_URL:
+        return
+    def _send():
+        try:
+            payload = json.dumps({
+                "prompt": f"Build a single-file HTML page for: {prompt}\n\n"
+                          f"Output ONLY the HTML. No explanation. The file will be served as-is.\n"
+                          f"Include all CSS and JS inline. Make it look good (dark theme, modern).",
+                "scope": f"quiver:{channel}",
+                "channel": channel,
+                "metadata": {"author": author, "source": "quiver", "command": "create"},
+            }).encode()
+            req = urllib.request.Request(
+                DISPATCH_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except Exception:
+            # If dispatch fails, post error back as bot message
+            try:
+                if BOT_TOKENS:
+                    bot_name = list(BOT_TOKENS.keys())[0]
+                    err_payload = json.dumps({
+                        "bot": bot_name,
+                        "secret": BOT_TOKENS[bot_name],
+                        "channel": channel,
+                        "content": "⚠ Dispatch misslyckades — substrate kanske inte ar online.",
+                    }).encode()
+                    err_req = urllib.request.Request(
+                        f"http://localhost:{PORT}/api/bot/message",
+                        data=err_payload,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    urllib.request.urlopen(err_req, timeout=5)
+            except Exception:
+                pass
     t = threading.Thread(target=_send, daemon=True)
     t.start()
 
@@ -2540,6 +2588,36 @@ class ChatHandler(BaseHTTPRequestHandler):
             # Per-user spam limit
             if not check_user_spam(author):
                 self.send_json({"ok": False, "error": "du skickar for snabbt, vanta lite"}, 429)
+                return
+
+            # --- Slash commands ---
+            # /create <prompt> — dispatch a scoped creative session via cortex
+            if content.startswith("/create ") and DISPATCH_URL:
+                create_prompt = content[8:].strip()
+                if not create_prompt:
+                    self.send_json({"ok": False, "error": "anvandning: /create <beskrivning>"}, 400)
+                    return
+                # Save the command as a regular message so others can see what was requested
+                cmd_id = str(uuid.uuid4())
+                ts = now()
+                db = get_db()
+                try:
+                    db.execute(
+                        "INSERT INTO messages (id, channel, author, content, role, attachments, created_at) VALUES (?, ?, ?, ?, 'user', '[]', ?)",
+                        (cmd_id, channel, author, content, ts)
+                    )
+                    db.commit()
+                finally:
+                    db.close()
+                broadcast({
+                    "event_type": "chat_message", "id": cmd_id, "channel": channel,
+                    "author": author, "content": content, "role": "user",
+                    "attachments": [], "has_attachments": False, "created_at": ts,
+                    "avatar_color": "#4f8ff7",
+                }, channel)
+                # Fire the dispatch (non-blocking)
+                dispatch_create(create_prompt, channel, author)
+                self.send_json({"ok": True, "id": cmd_id, "channel": channel, "dispatched": True})
                 return
 
             role = "user"
