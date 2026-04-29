@@ -314,6 +314,38 @@ body {
 }
 #send-btn:hover { opacity: 0.85; }
 
+/* Spawn popup */
+#spawn-popup {
+  display: none; position: absolute; bottom: 70px; left: 20px; right: 20px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px; z-index: 100; max-width: 500px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+#spawn-popup.on { display: block; }
+#spawn-popup h3 { color: var(--accent); font-family: var(--font-mono); font-size: 14px; margin-bottom: 12px; }
+.spawn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.spawn-card {
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; cursor: pointer; transition: all 0.15s;
+}
+.spawn-card:hover { border-color: var(--accent); background: var(--bg-deep); }
+.spawn-card .spawn-name { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.spawn-card .spawn-desc { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.spawn-card .spawn-icon { font-size: 20px; margin-bottom: 6px; }
+
+/* AI messages */
+.msg-ai .msg-author { color: var(--purple) !important; }
+.msg-ai { border-left: 2px solid var(--purple); padding-left: 8px; margin-left: 4px; }
+.msg-ai pre { background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; margin: 6px 0; font-size: 12px; }
+.msg-ai code { font-family: var(--font-mono); font-size: 12px; }
+.ai-render-btn {
+  background: var(--green); border: none; border-radius: 6px; color: #000;
+  font-family: var(--font-mono); font-weight: 600; font-size: 11px;
+  padding: 6px 14px; cursor: pointer; margin-top: 6px;
+}
+.ai-render-btn:hover { opacity: 0.85; }
+.ai-typing { color: var(--purple); font-style: italic; font-size: 12px; padding: 8px 0 8px 68px; }
+
 /* Reactions */
 .msg-reactions {
   display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; padding-left: 60px;
@@ -947,6 +979,33 @@ body {
       onkeydown="handleKey(event)"></textarea>
     <button id="send-btn" onclick="send()">Skicka</button>
   </div>
+</div>
+
+<div id="spawn-popup">
+  <h3>&#9889; /spawn — Valj en AI</h3>
+  <div class="spawn-grid">
+    <div class="spawn-card" onclick="doSpawn('gameai')">
+      <div class="spawn-icon">&#127918;</div>
+      <div class="spawn-name">GameAI</div>
+      <div class="spawn-desc">Skapar spel direkt i chatten — HTML5/JS</div>
+    </div>
+    <div class="spawn-card" onclick="doSpawn('webai')">
+      <div class="spawn-icon">&#127760;</div>
+      <div class="spawn-name">WebAI</div>
+      <div class="spawn-desc">Genererar hemsidor och webbappar</div>
+    </div>
+    <div class="spawn-card" onclick="doSpawn('artai')">
+      <div class="spawn-icon">&#127912;</div>
+      <div class="spawn-name">ArtAI</div>
+      <div class="spawn-desc">Skapar SVG-konst och animationer</div>
+    </div>
+    <div class="spawn-card" onclick="doSpawn('codeai')">
+      <div class="spawn-icon">&#128187;</div>
+      <div class="spawn-name">CodeAI</div>
+      <div class="spawn-desc">Skriver kod, scripts och verktyg</div>
+    </div>
+  </div>
+  <div style="margin-top:10px;font-size:11px;color:var(--text-muted)">Tips: skriv <code style="color:var(--accent)">/spawn gameai</code> direkt for att skippa menyn</div>
 </div>
 
 <div id="lightbox" onclick="if(event.target===this)this.classList.remove('on')"><img id="lb-img"></div>
@@ -3619,6 +3678,40 @@ async function send() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text && !pendingFiles.length) return;
+
+  // --- /despawn command ---
+  if (text === '/despawn') {
+    input.value = '';
+    input.style.height = 'auto';
+    despawn();
+    return;
+  }
+
+  // --- /spawn command ---
+  if (text.startsWith('/spawn')) {
+    input.value = '';
+    input.style.height = 'auto';
+    const parts = text.split(/\s+/);
+    if (parts.length === 1) {
+      // Show spawn menu
+      const popup = document.getElementById('spawn-popup');
+      popup.classList.toggle('on');
+      return;
+    }
+    const aiType = parts[1].toLowerCase();
+    const prompt = parts.slice(2).join(' ');
+    doSpawn(aiType, prompt);
+    return;
+  }
+
+  // --- Check if talking to spawned AI ---
+  if (activeSpawn && text) {
+    input.value = '';
+    input.style.height = 'auto';
+    sendToAI(text);
+    return;
+  }
+
   input.value = '';
   input.style.height = 'auto';
   window._lastSend = Date.now();
@@ -3667,6 +3760,175 @@ function handleKey(e) {
     e.preventDefault();
     send();
   }
+}
+
+// === Spawn AI System ===
+const SPAWN_AI_TYPES = {
+  gameai:  { name: 'GameAI',  icon: '\u{1F3AE}', color: '#3fb950', system: 'You are GameAI. You create browser games using HTML5, CSS, and JavaScript. Always return a COMPLETE, self-contained HTML file with inline CSS and JS. The game must work when opened in a browser. Include a canvas or DOM-based game. Make it fun and polished.' },
+  webai:   { name: 'WebAI',   icon: '\u{1F310}', color: '#58a6ff', system: 'You are WebAI. You create websites and web apps using HTML, CSS, and JavaScript. Always return a COMPLETE, self-contained HTML file. Make it modern, responsive, and visually appealing.' },
+  artai:   { name: 'ArtAI',   icon: '\u{1F3A8}', color: '#f778ba', system: 'You are ArtAI. You create SVG art, CSS animations, and visual experiences. Always return a COMPLETE, self-contained HTML file with inline SVG or CSS art. Make it beautiful and creative.' },
+  codeai:  { name: 'CodeAI',  icon: '\u{1F4BB}', color: '#bc8cff', system: 'You are CodeAI. You write clean, working code. You can create scripts, tools, utilities in any language. When the user asks for something, provide complete working code with explanations.' },
+};
+
+let activeSpawn = null; // { type, messages, el }
+
+function doSpawn(aiType, initialPrompt) {
+  document.getElementById('spawn-popup').classList.remove('on');
+  const ai = SPAWN_AI_TYPES[aiType];
+  if (!ai) {
+    appendSystem('Okand AI: ' + aiType + '. Tillgangliga: ' + Object.keys(SPAWN_AI_TYPES).join(', '));
+    return;
+  }
+
+  activeSpawn = {
+    type: aiType,
+    messages: [{ role: 'system', content: ai.system }],
+  };
+
+  // Show spawn banner in chat
+  const el = document.getElementById('messages');
+  const banner = document.createElement('div');
+  banner.className = 'msg-system';
+  banner.innerHTML = ai.icon + ' <strong style="color:' + ai.color + '">' + ai.name + '</strong> spawnad! Skriv vad du vill skapa. Skriv <code>/despawn</code> for att avsluta.';
+  el.appendChild(banner);
+  scrollBottom(true);
+
+  // Update input placeholder
+  document.getElementById('msg-input').placeholder = ai.icon + ' Fraga ' + ai.name + '...';
+  document.getElementById('msg-input').focus();
+
+  if (initialPrompt) {
+    sendToAI(initialPrompt);
+  }
+}
+
+function despawn() {
+  if (!activeSpawn) return;
+  const ai = SPAWN_AI_TYPES[activeSpawn.type];
+  appendSystem((ai ? ai.icon : '') + ' ' + (ai ? ai.name : 'AI') + ' despawnad.');
+  activeSpawn = null;
+  document.getElementById('msg-input').placeholder = 'Skriv ett meddelande...';
+}
+
+async function sendToAI(prompt) {
+  if (!activeSpawn) return;
+  const ai = SPAWN_AI_TYPES[activeSpawn.type];
+
+  // Show user message
+  addDateSeparator(new Date().toISOString());
+  appendMsg(username, prompt, 'self', new Date().toISOString(), [], 'tmp-' + Date.now(), [], 0, _myAvatarColor, _myAvatar);
+  scrollBottom(true);
+
+  // Add to conversation
+  activeSpawn.messages.push({ role: 'user', content: prompt });
+
+  // Show typing indicator
+  const typingEl = document.createElement('div');
+  typingEl.className = 'ai-typing';
+  typingEl.textContent = ai.icon + ' ' + ai.name + ' tanker...';
+  document.getElementById('messages').appendChild(typingEl);
+  scrollBottom(true);
+
+  try {
+    const res = await fetch('/api/spawn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ai_type: activeSpawn.type,
+        messages: activeSpawn.messages,
+        author: username,
+        token: userToken,
+        channel: currentChannel,
+      }),
+    });
+    const data = await res.json();
+    typingEl.remove();
+
+    if (!data.ok) {
+      appendSystem('Fel: ' + (data.error || 'spawn misslyckades'));
+      return;
+    }
+
+    const reply = data.reply || '';
+    activeSpawn.messages.push({ role: 'assistant', content: reply });
+
+    // Render AI response
+    renderAIMessage(ai, reply);
+
+  } catch(e) {
+    typingEl.remove();
+    appendSystem('Spawn-fel: ' + e.message);
+  }
+}
+
+function renderAIMessage(ai, content) {
+  const el = document.getElementById('messages');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg msg-ai';
+
+  // Check for HTML code blocks
+  const htmlMatch = content.match(/```html\s*([\s\S]*?)```/);
+  const hasFullHTML = htmlMatch || content.trim().startsWith('<!DOCTYPE') || content.trim().startsWith('<html');
+
+  let displayContent = content;
+  // Simple markdown: bold, code blocks, inline code
+  displayContent = displayContent.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+    return '<pre><code>' + code.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code></pre>';
+  });
+  displayContent = displayContent.replace(/`([^`]+)`/g, '<code>$1</code>');
+  displayContent = displayContent.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  displayContent = displayContent.replace(/\n/g, '<br>');
+
+  const header = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    + '<span style="font-size:18px">' + ai.icon + '</span>'
+    + '<span class="msg-author" style="color:' + ai.color + ';font-weight:600;font-family:var(--font-mono);font-size:13px">' + ai.name + '</span>'
+    + '<span style="color:var(--text-muted);font-size:11px">' + new Date().toLocaleTimeString('sv-SE', {hour:'2-digit',minute:'2-digit'}) + '</span>'
+    + '</div>';
+
+  wrapper.innerHTML = header + '<div style="color:var(--text-secondary);font-size:13px;line-height:1.6">' + displayContent + '</div>';
+
+  // Add "Kör" button if HTML detected
+  if (hasFullHTML) {
+    const htmlCode = htmlMatch ? htmlMatch[1] : content;
+    const btn = document.createElement('button');
+    btn.className = 'ai-render-btn';
+    btn.textContent = '\u25B6 Kor i nytt fonster';
+    btn.onclick = function() { openAIResult(htmlCode); };
+    wrapper.appendChild(btn);
+
+    const btnInline = document.createElement('button');
+    btnInline.className = 'ai-render-btn';
+    btnInline.style.background = 'var(--accent)';
+    btnInline.style.marginLeft = '6px';
+    btnInline.textContent = '\u25A3 Kor inline';
+    btnInline.onclick = function() { renderInline(wrapper, htmlCode); };
+    wrapper.appendChild(btnInline);
+  }
+
+  el.appendChild(wrapper);
+  scrollBottom(true);
+}
+
+function openAIResult(html) {
+  const w = window.open('', '_blank');
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
+
+function renderInline(parentEl, html) {
+  // Remove existing inline preview
+  const existing = parentEl.querySelector('.ai-inline-preview');
+  if (existing) { existing.remove(); return; }
+
+  const frame = document.createElement('iframe');
+  frame.className = 'ai-inline-preview';
+  frame.style.cssText = 'width:100%;height:400px;border:1px solid var(--border);border-radius:8px;margin-top:8px;background:#fff';
+  frame.sandbox = 'allow-scripts allow-same-origin';
+  parentEl.appendChild(frame);
+  frame.contentDocument.open();
+  frame.contentDocument.write(html);
+  frame.contentDocument.close();
 }
 
 // Auto-resize textarea + send typing events
@@ -3734,6 +3996,11 @@ document.addEventListener('click', (e) => {
   if (picker.classList.contains('on') && !picker.contains(e.target) && e.target.id !== 'emoji-btn') {
     picker.classList.remove('on');
     emojiPickerMode = null;
+  }
+  // Close spawn popup on click outside
+  const spawnPopup = document.getElementById('spawn-popup');
+  if (spawnPopup && spawnPopup.classList.contains('on') && !spawnPopup.contains(e.target)) {
+    spawnPopup.classList.remove('on');
   }
 });
 

@@ -52,6 +52,14 @@ ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "onboarding@resend.com")
 
+# --- AI Spawn Config ---
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+SPAWN_PROVIDER = os.environ.get("SPAWN_PROVIDER", "openai")  # "openai" or "anthropic"
+
 DISPOSABLE_DOMAINS = {
     "mailinator.com","guerrillamail.com","guerrillamail.de","tempmail.com","throwaway.email",
     "yopmail.com","10minutemail.com","trashmail.com","fakeinbox.com","sharklasers.com",
@@ -1082,6 +1090,67 @@ class WebSocketConnection:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
         self.alive = False
+
+
+# --- AI Spawn: call AI provider ---
+def call_ai(messages, ai_type="gameai"):
+    """Call AI provider (OpenAI or Anthropic) with messages. Returns reply text."""
+    provider = SPAWN_PROVIDER.lower()
+
+    if provider == "anthropic" and ANTHROPIC_API_KEY:
+        # Anthropic API
+        system_msg = ""
+        chat_msgs = []
+        for m in messages:
+            if m["role"] == "system":
+                system_msg = m["content"]
+            else:
+                chat_msgs.append({"role": m["role"], "content": m["content"]})
+
+        payload = json.dumps({
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 4096,
+            "system": system_msg,
+            "messages": chat_msgs,
+        }).encode()
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            return data.get("content", [{}])[0].get("text", "")
+
+    elif OPENAI_API_KEY:
+        # OpenAI-compatible API
+        payload = json.dumps({
+            "model": OPENAI_MODEL,
+            "messages": messages,
+            "max_tokens": 4096,
+        }).encode()
+
+        req = urllib.request.Request(
+            OPENAI_BASE_URL.rstrip("/") + "/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+
+    else:
+        return "Ingen AI-nyckel konfigurerad. Satt OPENAI_API_KEY eller ANTHROPIC_API_KEY som environment variable."
 
 
 def broadcast(event_data, channel=None):
@@ -2609,6 +2678,35 @@ class ChatHandler(BaseHTTPRequestHandler):
             broadcast(broadcast_data, channel)
 
             self.send_json({"ok": True, "id": msg_id, "channel": channel})
+            return
+
+        # API: AI Spawn — POST /api/spawn { ai_type, messages, author, token, channel }
+        if path == "/api/spawn":
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not author or not token:
+                self.send_json({"ok": False, "error": "token required"}, 401)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+            finally:
+                db.close()
+            if not valid:
+                self.send_json({"ok": False, "error": "invalid token"}, 401)
+                return
+
+            ai_type = body.get("ai_type", "gameai")
+            messages = body.get("messages", [])
+            if not messages or not isinstance(messages, list):
+                self.send_json({"ok": False, "error": "no messages"}, 400)
+                return
+
+            try:
+                reply = call_ai(messages, ai_type)
+                self.send_json({"ok": True, "reply": reply})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
             return
 
         # API: WebRTC signaling relay — POST /api/signal { type, to, from, ... }
