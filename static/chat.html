@@ -1194,8 +1194,8 @@ body {
 <div id="camera-grid"></div>
 
 <!-- Voice Channel Overlay (bottom bar) -->
-<div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--green);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(52,211,153,0.2);align-items:center;gap:16px">
-  <div style="font-size:20px">&#128266;</div>
+<div id="call-overlay" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:400;background:var(--bg-surface);border:1px solid var(--green);border-radius:16px;padding:16px 24px;box-shadow:0 8px 40px rgba(52,211,153,0.2);align-items:center;gap:16px;cursor:grab;user-select:none;touch-action:none">
+  <div style="font-size:20px;pointer-events:none">&#128266;</div>
   <div>
     <div style="font-family:var(--font-mono);font-size:13px;color:var(--green)" id="call-peer-name">Samtal</div>
     <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="call-timer">00:00</div>
@@ -4003,6 +4003,51 @@ document.addEventListener('click', (e) => {
     spawnPopup.classList.remove('on');
   }
 });
+
+// --- Draggable call overlay ---
+(function() {
+  const el = document.getElementById('call-overlay');
+  let dragging = false, startX, startY, origX, origY;
+
+  function onStart(e) {
+    // Don't drag when clicking buttons
+    if (e.target.closest('button')) return;
+    dragging = true;
+    const pt = e.touches ? e.touches[0] : e;
+    const rect = el.getBoundingClientRect();
+    startX = pt.clientX; startY = pt.clientY;
+    origX = rect.left; origY = rect.top;
+    el.style.cursor = 'grabbing';
+    el.style.transform = 'none';
+    el.style.left = rect.left + 'px';
+    el.style.top = rect.top + 'px';
+    el.style.bottom = 'auto';
+    e.preventDefault();
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    const pt = e.touches ? e.touches[0] : e;
+    let nx = origX + (pt.clientX - startX);
+    let ny = origY + (pt.clientY - startY);
+    // Keep within viewport
+    nx = Math.max(0, Math.min(window.innerWidth - el.offsetWidth, nx));
+    ny = Math.max(0, Math.min(window.innerHeight - el.offsetHeight, ny));
+    el.style.left = nx + 'px';
+    el.style.top = ny + 'px';
+  }
+  function onEnd() {
+    if (!dragging) return;
+    dragging = false;
+    el.style.cursor = 'grab';
+  }
+
+  el.addEventListener('mousedown', onStart);
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onEnd);
+  el.addEventListener('touchstart', onStart, { passive: false });
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onEnd);
+})();
 
 // === Role badges for chat messages ===
 function getRoleBadgesHTML(author) {
