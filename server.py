@@ -762,6 +762,18 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_friends_user1 ON friends(user1)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_friends_user2 ON friends(user2)")
+    # Highscores for /spawn games
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS highscores (
+            id TEXT PRIMARY KEY,
+            game TEXT NOT NULL,
+            username TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hs_game ON highscores(game)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hs_score ON highscores(game, score DESC)")
     # Migration: add icon and background to groups
     for col, default in [("icon", "''"), ("background", "''")]:
         try:
@@ -1449,6 +1461,21 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_json({"ok": False, "error": "db unreachable"}, 503)
+            return
+
+        # API: Get highscores — GET /api/highscores?game=xxx
+        if path == "/api/highscores":
+            game = params.get("game", [None])[0]
+            if not game:
+                self.send_json({"ok": False, "error": "game required"}, 400)
+                return
+            db = get_db()
+            try:
+                rows = db.execute("SELECT username, score, created_at FROM highscores WHERE game = ? ORDER BY score DESC LIMIT 10", (game,)).fetchall()
+            finally:
+                db.close()
+            scores = [{"username": r[0], "score": r[1], "created_at": r[2]} for r in rows]
+            self.send_json({"ok": True, "scores": scores})
             return
 
         # API: channels — filtered by visibility + membership
@@ -2707,6 +2734,40 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "reply": reply})
             except Exception as e:
                 self.send_json({"ok": False, "error": str(e)}, 500)
+            return
+
+        # API: Submit highscore — POST /api/highscore { game, score, author, token }
+        if path == "/api/highscore" and method == "POST":
+            game = body.get("game", "").strip()[:50]
+            score = body.get("score", 0)
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            if not game or not author or not token:
+                self.send_json({"ok": False, "error": "missing fields"}, 400)
+                return
+            if not isinstance(score, int) or score < 0:
+                self.send_json({"ok": False, "error": "invalid score"}, 400)
+                return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+                if not valid:
+                    self.send_json({"ok": False, "error": "invalid token"}, 401)
+                    return
+                # Only keep top score per user per game
+                existing = db.execute("SELECT score FROM highscores WHERE game = ? AND username = ?", (game, author)).fetchone()
+                if existing and existing[0] >= score:
+                    self.send_json({"ok": True, "new_best": False, "best": existing[0]})
+                    return
+                if existing:
+                    db.execute("UPDATE highscores SET score = ?, created_at = ? WHERE game = ? AND username = ?", (score, now(), game, author))
+                else:
+                    db.execute("INSERT INTO highscores (id, game, username, score, created_at) VALUES (?, ?, ?, ?, ?)",
+                               (uuid.uuid4().hex, game, author, score, now()))
+                db.commit()
+                self.send_json({"ok": True, "new_best": True, "best": score})
+            finally:
+                db.close()
             return
 
         # API: WebRTC signaling relay — POST /api/signal { type, to, from, ... }

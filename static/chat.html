@@ -318,20 +318,22 @@ body {
 #spawn-popup {
   display: none; position: absolute; bottom: 70px; left: 20px; right: 20px;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px;
-  padding: 16px; z-index: 100; max-width: 500px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  padding: 16px; z-index: 100; max-width: 600px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-height: 70vh; overflow-y: auto;
 }
 #spawn-popup.on { display: block; }
 #spawn-popup h3 { color: var(--accent); font-family: var(--font-mono); font-size: 14px; margin-bottom: 12px; }
+.spawn-category { margin-bottom: 14px; }
+.spawn-category-title { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; padding-left: 2px; }
 .spawn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .spawn-card {
   background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 12px; cursor: pointer; transition: all 0.15s;
+  padding: 10px 12px; cursor: pointer; transition: all 0.15s;
 }
 .spawn-card:hover { border-color: var(--accent); background: var(--bg-deep); }
-.spawn-card .spawn-name { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text-primary); }
-.spawn-card .spawn-desc { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-.spawn-card .spawn-icon { font-size: 20px; margin-bottom: 6px; }
+.spawn-card .spawn-name { font-family: var(--font-mono); font-weight: 600; font-size: 12px; color: var(--text-primary); }
+.spawn-card .spawn-desc { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+.spawn-card .spawn-icon { font-size: 18px; margin-bottom: 4px; }
 
 /* AI messages */
 .msg-ai .msg-author { color: var(--purple) !important; }
@@ -982,30 +984,81 @@ body {
 </div>
 
 <div id="spawn-popup">
-  <h3>&#9889; /spawn — Valj en AI</h3>
-  <div class="spawn-grid">
-    <div class="spawn-card" onclick="doSpawn('gameai')">
-      <div class="spawn-icon">&#127918;</div>
-      <div class="spawn-name">GameAI</div>
-      <div class="spawn-desc">Skapar spel direkt i chatten — HTML5/JS</div>
-    </div>
-    <div class="spawn-card" onclick="doSpawn('webai')">
-      <div class="spawn-icon">&#127760;</div>
-      <div class="spawn-name">WebAI</div>
-      <div class="spawn-desc">Genererar hemsidor och webbappar</div>
-    </div>
-    <div class="spawn-card" onclick="doSpawn('artai')">
-      <div class="spawn-icon">&#127912;</div>
-      <div class="spawn-name">ArtAI</div>
-      <div class="spawn-desc">Skapar SVG-konst och animationer</div>
-    </div>
-    <div class="spawn-card" onclick="doSpawn('codeai')">
-      <div class="spawn-icon">&#128187;</div>
-      <div class="spawn-name">CodeAI</div>
-      <div class="spawn-desc">Skriver kod, scripts och verktyg</div>
+  <h3>&#9889; /spawn — Game Studios AI</h3>
+
+  <div class="spawn-category">
+    <div class="spawn-category-title">&#127918; Spelstudio</div>
+    <div class="spawn-grid">
+      <div class="spawn-card" onclick="doSpawn('gameai')">
+        <div class="spawn-icon">&#127918;</div>
+        <div class="spawn-name">GameAI</div>
+        <div class="spawn-desc">Allround speldesigner — alla genrer</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('platformer')">
+        <div class="spawn-icon">&#127939;</div>
+        <div class="spawn-name">PlatformerAI</div>
+        <div class="spawn-desc">Mario-stil plattformsspel</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('arcade')">
+        <div class="spawn-icon">&#128126;</div>
+        <div class="spawn-name">ArcadeAI</div>
+        <div class="spawn-desc">Retro arcade — snake, pong, asteroids</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('puzzle')">
+        <div class="spawn-icon">&#129513;</div>
+        <div class="spawn-name">PuzzleAI</div>
+        <div class="spawn-desc">Pusselspel — matching, logik, sokoban</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('rpg')">
+        <div class="spawn-icon">&#9876;</div>
+        <div class="spawn-name">RPGAI</div>
+        <div class="spawn-desc">Rollspel — inventory, strid, dialog</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('shooter')">
+        <div class="spawn-icon">&#128165;</div>
+        <div class="spawn-name">ShooterAI</div>
+        <div class="spawn-desc">Top-down eller side-scrolling shooters</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('racer')">
+        <div class="spawn-icon">&#127950;</div>
+        <div class="spawn-name">RacerAI</div>
+        <div class="spawn-desc">Racingspel — bilar, pseudo-3D, drifting</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('strategy')">
+        <div class="spawn-icon">&#9812;</div>
+        <div class="spawn-name">StrategyAI</div>
+        <div class="spawn-desc">Tower defense, RTS, turbaserad strategi</div>
+      </div>
     </div>
   </div>
-  <div style="margin-top:10px;font-size:11px;color:var(--text-muted)">Tips: skriv <code style="color:var(--accent)">/spawn gameai</code> direkt for att skippa menyn</div>
+
+  <div class="spawn-category">
+    <div class="spawn-category-title">&#128295; Verktyg</div>
+    <div class="spawn-grid">
+      <div class="spawn-card" onclick="doSpawn('webai')">
+        <div class="spawn-icon">&#127760;</div>
+        <div class="spawn-name">WebAI</div>
+        <div class="spawn-desc">Hemsidor och webbappar</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('artai')">
+        <div class="spawn-icon">&#127912;</div>
+        <div class="spawn-name">ArtAI</div>
+        <div class="spawn-desc">SVG-konst och animationer</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('codeai')">
+        <div class="spawn-icon">&#128187;</div>
+        <div class="spawn-name">CodeAI</div>
+        <div class="spawn-desc">Kod, scripts och verktyg</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('soundai')">
+        <div class="spawn-icon">&#127925;</div>
+        <div class="spawn-name">SoundAI</div>
+        <div class="spawn-desc">Web Audio — ljud, musik, SFX</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:10px;font-size:11px;color:var(--text-muted)">Tips: <code style="color:var(--accent)">/spawn arcade snake</code> — skippa menyn och ge en prompt direkt</div>
 </div>
 
 <div id="lightbox" onclick="if(event.target===this)this.classList.remove('on')"><img id="lb-img"></div>
@@ -3762,12 +3815,218 @@ function handleKey(e) {
   }
 }
 
-// === Spawn AI System ===
+// === Spawn AI System — Game Studios Edition ===
+const SPAWN_CORE_RULES = `CRITICAL RULES:
+1. ALWAYS return a COMPLETE self-contained HTML file with ALL CSS and JS inline.
+2. The file MUST work when opened directly in a browser — no external dependencies, no CDNs, no imports.
+3. Use HTML5 Canvas for rendering. DOM-based games only if Canvas is unnecessary.
+4. MUST have: title screen, instructions, game over screen with score and restart.
+5. MUST be responsive — work on both desktop and mobile (touch + keyboard input).
+6. Use requestAnimationFrame for game loops. Use delta time for frame-rate independence.
+7. All game values (speed, gravity, spawn rates) must be tuning constants at the top.
+8. Include sound effects using Web Audio API oscillators (no audio files).
+9. Make it POLISHED: smooth animations, particle effects, screen shake, juice.
+10. Dark theme that matches the chat app (bg: #1a1a2e, accent colors).
+
+QUIVER HIGHSCORE API (automatically injected — window.QuiverAPI is available):
+- QuiverAPI.submitScore(score) — saves score for current user. Returns {ok, new_best, best}.
+- QuiverAPI.getScores() — returns top 10 scores as {ok, scores: [{username, score, created_at}]}.
+- Call submitScore on game over. Show leaderboard with getScores on title/game-over screen.
+- QuiverAPI.user contains the player's username — display it in-game.`;
+
 const SPAWN_AI_TYPES = {
-  gameai:  { name: 'GameAI',  icon: '\u{1F3AE}', color: '#3fb950', system: 'You are GameAI. You create browser games using HTML5, CSS, and JavaScript. Always return a COMPLETE, self-contained HTML file with inline CSS and JS. The game must work when opened in a browser. Include a canvas or DOM-based game. Make it fun and polished.' },
-  webai:   { name: 'WebAI',   icon: '\u{1F310}', color: '#58a6ff', system: 'You are WebAI. You create websites and web apps using HTML, CSS, and JavaScript. Always return a COMPLETE, self-contained HTML file. Make it modern, responsive, and visually appealing.' },
-  artai:   { name: 'ArtAI',   icon: '\u{1F3A8}', color: '#f778ba', system: 'You are ArtAI. You create SVG art, CSS animations, and visual experiences. Always return a COMPLETE, self-contained HTML file with inline SVG or CSS art. Make it beautiful and creative.' },
-  codeai:  { name: 'CodeAI',  icon: '\u{1F4BB}', color: '#bc8cff', system: 'You are CodeAI. You write clean, working code. You can create scripts, tools, utilities in any language. When the user asks for something, provide complete working code with explanations.' },
+  // --- GAME STUDIO AI:s ---
+  gameai: {
+    name: 'GameAI', icon: '\u{1F3AE}', color: '#3fb950',
+    system: `You are GameAI — the Creative Director of Quiver Game Studios. You design and build complete browser games.
+
+${SPAWN_CORE_RULES}
+
+DESIGN PHILOSOPHY (MDA Framework):
+- Mechanics: What the player DOES (verbs: jump, shoot, match, build)
+- Dynamics: What EMERGES from the mechanics (risk/reward, resource management)
+- Aesthetics: What the player FEELS (challenge, discovery, expression, fellowship)
+
+Start every game with a clear PLAYER FANTASY — what power trip or experience are you delivering?
+Use progressive difficulty curves. Teach through play, not tutorials.
+Add particle effects, screen shake, and satisfying feedback for every player action.`
+  },
+
+  platformer: {
+    name: 'PlatformerAI', icon: '\u{1F3C3}', color: '#ff6b6b',
+    system: `You are PlatformerAI — specialist in 2D platform games.
+
+${SPAWN_CORE_RULES}
+
+PLATFORMER DESIGN RULES:
+- Physics: gravity, variable jump height (hold jump = higher), coyote time (6 frames), jump buffering (8 frames)
+- Movement: acceleration/deceleration curves, not instant velocity. Air control at 60% of ground control.
+- Level design: teach one mechanic at a time. Safe space → challenge → reward → rest.
+- Enemies: clear visual telegraphing, fair hitboxes, satisfying defeat effects.
+- Camera: smooth follow with look-ahead. Dead zone in center.
+- Juice: squash/stretch on land, speed lines, dust particles on jump/land, screen shake on death.
+- Collectibles: coins/gems with magnetism when close, satisfying pickup sound + particle burst.
+- Use tile-based or procedural levels. Include at least 3 distinct sections/levels.
+- Controls: Arrow keys + Space (desktop), virtual joystick + jump button (mobile).`
+  },
+
+  arcade: {
+    name: 'ArcadeAI', icon: '\u{1F47E}', color: '#ffd93d',
+    system: `You are ArcadeAI — specialist in retro arcade classics and modern arcade games.
+
+${SPAWN_CORE_RULES}
+
+ARCADE DESIGN RULES:
+- Core loop: simple to learn, impossible to master. One main mechanic, deep mastery curve.
+- Difficulty: start easy, ramp smoothly. Speed increases, more enemies, tighter patterns.
+- Scoring: combo systems, multipliers, bonus rounds. Score should ALWAYS be visible.
+- Lives system: 3 lives default. Extra life at score thresholds.
+- Retro aesthetic: pixel-perfect rendering, CRT scanline effect (optional), neon glow colors.
+- Sound: 8-bit style oscillator sounds. Distinct sounds for: move, shoot, hit, die, powerup, level-up.
+- High score: save to localStorage. Show top 5 on game over.
+- Classic genres: Snake, Pong, Breakout, Asteroids, Space Invaders, Tetris, Pac-Man style, Flappy Bird.
+- Powerups: shield, rapid fire, slow-mo, magnet, extra life. Flash when about to expire.
+- Game feel: instant response, no input lag, generous hitboxes for the player.`
+  },
+
+  puzzle: {
+    name: 'PuzzleAI', icon: '\u{1F9E9}', color: '#4ecdc4',
+    system: `You are PuzzleAI — specialist in puzzle and logic games.
+
+${SPAWN_CORE_RULES}
+
+PUZZLE DESIGN RULES:
+- Teach mechanics through level design, not text. Level 1 = one move solution.
+- Progressive complexity: introduce ONE new element per 3-5 levels.
+- Undo system: ALWAYS include undo (Ctrl+Z / undo button). Multiple undo levels.
+- Win detection must be instant and feel celebratory (particles, animation, sound).
+- Puzzle types: match-3, sokoban, sliding puzzles, path-finding, logic gates, color mixing, word games.
+- Grid-based: clear cell boundaries, smooth animations between states, highlight valid moves.
+- Level progression: at least 10 levels, saved progress in localStorage.
+- Hints system: subtle visual hints after 30s of no moves, explicit hint button.
+- Accessibility: colorblind-safe (use shapes + colors), clear contrast, large touch targets.
+- Satisfying feedback: chain reactions, cascade effects, combo multipliers for speed.`
+  },
+
+  rpg: {
+    name: 'RPGAI', icon: '\u2694', color: '#9b59b6',
+    system: `You are RPGAI — specialist in role-playing games and adventure games.
+
+${SPAWN_CORE_RULES}
+
+RPG DESIGN RULES:
+- Character: name, class/type, stats (HP, ATK, DEF, SPD, MP), level, XP bar.
+- Combat: turn-based with clear UI. Show damage numbers, health bars, status effects.
+- Abilities: at least 4 per class. MP/cooldown cost. Visual effects for each.
+- Inventory: grid or list, equip slots (weapon, armor, accessory), item descriptions.
+- Enemies: variety with different behaviors. Boss every 5 levels. Loot tables.
+- Progression: XP → level up → stat boosts + new abilities. Satisfying level-up animation.
+- Economy: gold from enemies, shop to buy items/equipment.
+- Map: tile-based exploration or room-based dungeon. Random encounters or visible enemies.
+- Dialog: NPC dialog system with choices that matter (branching).
+- Save: auto-save progress to localStorage. Resume button on title screen.
+- UI: RPG-style bordered panels, pixel font feel, health/mana bars with smooth transitions.`
+  },
+
+  shooter: {
+    name: 'ShooterAI', icon: '\u{1F4A5}', color: '#e74c3c',
+    system: `You are ShooterAI — specialist in shooter games (top-down, side-scrolling, bullet-hell).
+
+${SPAWN_CORE_RULES}
+
+SHOOTER DESIGN RULES:
+- Controls: WASD/arrows to move, mouse to aim, click/space to shoot. Touch: virtual joystick + auto-aim.
+- Weapons: start basic, upgrade through pickups. At least 3 weapon types (rapid, spread, heavy).
+- Enemies: wave-based spawning. Variety: basic (straight), flanker, tank, boss. Clear bullet patterns.
+- Bullets: object pooling for performance. Distinct player vs enemy bullet colors.
+- Explosions: particle systems for hits, deaths, powerups. Screen shake on big hits.
+- Powerups: weapon upgrades, shield, health, bomb (clears screen), speed boost.
+- Scoring: points per kill, multiplier for chains, bonus for no-damage waves.
+- Boss fights: multi-phase, pattern-based, health bar at top of screen.
+- Performance: handle 100+ bullets smoothly. Use spatial partitioning if needed.
+- Juice: muzzle flash, bullet trails, enemy hit flash (white for 2 frames), knockback.`
+  },
+
+  racer: {
+    name: 'RacerAI', icon: '\u{1F3CE}', color: '#f39c12',
+    system: `You are RacerAI — specialist in racing and driving games.
+
+${SPAWN_CORE_RULES}
+
+RACING DESIGN RULES:
+- Perspective: pseudo-3D (outrun style), top-down, or isometric. Pseudo-3D preferred for wow factor.
+- Pseudo-3D: road segments with projection, curves via offset, hills via scale. Stripe colors for speed feel.
+- Physics: acceleration, braking, top speed, steering (tighter at low speed). Drift mechanic with boost reward.
+- Track: procedurally generated or hand-crafted. Curves, hills, straights. Roadside objects (trees, signs).
+- Opponents: AI racers with rubber-banding (stay competitive). At least 3 opponents.
+- Speed feel: FOV increase at high speed, motion blur lines, camera shake, speedometer.
+- Obstacles: oil slicks (spin), boost pads, jumps, traffic cars.
+- Laps: 3 laps default. Best lap time tracking. Countdown start (3-2-1-GO).
+- HUD: speed, position (1st/2nd/3rd), lap counter, minimap (optional), time.
+- Sound: engine pitch changes with speed (oscillator frequency modulation).`
+  },
+
+  strategy: {
+    name: 'StrategyAI', icon: '\u2654', color: '#1abc9c',
+    system: `You are StrategyAI — specialist in strategy and tower defense games.
+
+${SPAWN_CORE_RULES}
+
+STRATEGY DESIGN RULES:
+- Tower Defense: grid-based placement, path-following enemies, upgrade system (3 tiers), sell/refund.
+- Tower types: basic (balanced), slow (area), sniper (long range, single target), splash (area damage).
+- Enemies: waves with increasing difficulty. Types: fast/weak, slow/tanky, flying, boss. Health bars.
+- Economy: gold per kill, interest between waves, bonus for perfect waves (no leaks).
+- Placement: highlight valid tiles, range preview circle, targeting priority (first, strongest, closest).
+- Wave system: wave counter, next wave preview, send early for bonus gold.
+- Turn-based strategy: fog of war, resource gathering, unit production, tech tree.
+- UI: resource display, wave info, selected tower stats, upgrade panel.
+- Balance: cost vs effectiveness curves. No dominant strategy — encourage variety.
+- Map: at least 3 maps or procedural generation. Multiple paths preferred.`
+  },
+
+  // --- VERKTYG ---
+  webai: {
+    name: 'WebAI', icon: '\u{1F310}', color: '#58a6ff',
+    system: `You are WebAI — specialist in modern web design and development.
+
+Always return a COMPLETE, self-contained HTML file with inline CSS and JS.
+No external dependencies. Must work offline.
+Use modern CSS (grid, flexbox, custom properties, animations).
+Mobile-first responsive design. Dark theme default.
+Smooth transitions and micro-interactions.
+Semantic HTML. Accessible (ARIA labels, keyboard navigation, contrast).`
+  },
+
+  artai: {
+    name: 'ArtAI', icon: '\u{1F3A8}', color: '#f778ba',
+    system: `You are ArtAI — specialist in generative art, SVG, and visual experiences.
+
+Always return a COMPLETE, self-contained HTML file.
+Create stunning visual experiences using: SVG, Canvas 2D, WebGL, CSS animations.
+Generative art: fractals, particle systems, flow fields, cellular automata, noise-based patterns.
+Interactive: respond to mouse/touch movement, clicks, device orientation.
+Beautiful color palettes. Smooth 60fps animations. Dark background.
+Make it mesmerizing — something people want to stare at.`
+  },
+
+  codeai: {
+    name: 'CodeAI', icon: '\u{1F4BB}', color: '#bc8cff',
+    system: 'You are CodeAI. You write clean, working code. You can create scripts, tools, utilities in any language. When the user asks for something, provide complete working code with explanations.'
+  },
+
+  soundai: {
+    name: 'SoundAI', icon: '\u{1F3B5}', color: '#e056a0',
+    system: `You are SoundAI — specialist in Web Audio API, music, and sound design.
+
+Always return a COMPLETE, self-contained HTML file with a visual interface.
+Create music, sound effects, synthesizers, drum machines, ambient soundscapes.
+Use Web Audio API: oscillators, filters, envelopes, delays, reverb, distortion.
+Visual feedback: waveform display, frequency spectrum, animated controls.
+Interactive: piano keys, drum pads, sliders, knobs. MIDI-style sequencer.
+Presets: include at least 3 preset sounds/songs. Dark themed UI.
+Touch-friendly for mobile. Low-latency audio.`
+  },
 };
 
 let activeSpawn = null; // { type, messages, el }
@@ -3893,7 +4152,7 @@ function renderAIMessage(ai, content) {
     const btn = document.createElement('button');
     btn.className = 'ai-render-btn';
     btn.textContent = '\u25B6 Kor i nytt fonster';
-    btn.onclick = function() { openAIResult(htmlCode); };
+    btn.onclick = function() { openAIResultWithAPI(htmlCode); };
     wrapper.appendChild(btn);
 
     const btnInline = document.createElement('button');
@@ -3903,17 +4162,68 @@ function renderAIMessage(ai, content) {
     btnInline.textContent = '\u25A3 Kor inline';
     btnInline.onclick = function() { renderInline(wrapper, htmlCode); };
     wrapper.appendChild(btnInline);
+
+    const btnShare = document.createElement('button');
+    btnShare.className = 'ai-render-btn';
+    btnShare.style.background = '#f778ba';
+    btnShare.style.marginLeft = '6px';
+    btnShare.textContent = '\u{1F4E4} Dela i chatt';
+    btnShare.onclick = function() {
+      const gameName = activeSpawn ? SPAWN_AI_TYPES[activeSpawn.type].name : 'AI';
+      const shareMsg = '\u{1F3AE} **' + gameName + ' Game** — klicka for att spela!\n```html\n' + htmlCode + '\n```';
+      const input = document.getElementById('msg-input');
+      const oldSpawn = activeSpawn;
+      activeSpawn = null; // temporarily disable spawn intercept
+      input.value = shareMsg;
+      send();
+      activeSpawn = oldSpawn;
+      btnShare.textContent = '\u2705 Delad!';
+      btnShare.disabled = true;
+    };
+    wrapper.appendChild(btnShare);
   }
 
   el.appendChild(wrapper);
   scrollBottom(true);
 }
 
-function openAIResult(html) {
-  const w = window.open('', '_blank');
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
+function injectQuiverAPI(html) {
+  // Inject Quiver highscore API into spawned games so they can save/load scores
+  const apiScript = `<script>
+// --- Quiver Game API ---
+window.QuiverAPI = {
+  user: '${username}',
+  token: '${userToken}',
+  gameName: document.title || 'unknown',
+
+  async submitScore(score, game) {
+    game = game || this.gameName;
+    try {
+      const res = await fetch('/api/highscore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ game: game, score: Math.floor(score), author: this.user, token: this.token })
+      });
+      return await res.json();
+    } catch(e) { return { ok: false, error: e.message }; }
+  },
+
+  async getScores(game) {
+    game = game || this.gameName;
+    try {
+      const res = await fetch('/api/highscores?game=' + encodeURIComponent(game));
+      return await res.json();
+    } catch(e) { return { ok: false, scores: [] }; }
+  }
+};
+<\/script>`;
+  // Insert before closing </head> or at start of <body>
+  if (html.includes('</head>')) {
+    return html.replace('</head>', apiScript + '</head>');
+  } else if (html.includes('<body')) {
+    return html.replace('<body', apiScript + '<body');
+  }
+  return apiScript + html;
 }
 
 function renderInline(parentEl, html) {
@@ -3921,14 +4231,23 @@ function renderInline(parentEl, html) {
   const existing = parentEl.querySelector('.ai-inline-preview');
   if (existing) { existing.remove(); return; }
 
+  const injectedHtml = injectQuiverAPI(html);
   const frame = document.createElement('iframe');
   frame.className = 'ai-inline-preview';
   frame.style.cssText = 'width:100%;height:400px;border:1px solid var(--border);border-radius:8px;margin-top:8px;background:#fff';
   frame.sandbox = 'allow-scripts allow-same-origin';
   parentEl.appendChild(frame);
   frame.contentDocument.open();
-  frame.contentDocument.write(html);
+  frame.contentDocument.write(injectedHtml);
   frame.contentDocument.close();
+}
+
+function openAIResultWithAPI(html) {
+  const injectedHtml = injectQuiverAPI(html);
+  const w = window.open('', '_blank');
+  w.document.open();
+  w.document.write(injectedHtml);
+  w.document.close();
 }
 
 // Auto-resize textarea + send typing events
