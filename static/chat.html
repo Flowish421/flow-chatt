@@ -4195,16 +4195,36 @@ window.QuiverAPI = {
   user: '${username}',
   token: '${userToken}',
   gameName: document.title || 'unknown',
+  _sessions: {},
+
+  async _getSession(game) {
+    if (this._sessions[game]) return this._sessions[game];
+    try {
+      const res = await fetch('/api/highscore/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ game: game, author: this.user, token: this.token })
+      });
+      const data = await res.json();
+      if (data.ok && data.session) { this._sessions[game] = data.session; return data.session; }
+    } catch(e) {}
+    return null;
+  },
 
   async submitScore(score, game) {
     game = game || this.gameName;
+    const session = await this._getSession(game);
+    if (!session) return { ok: false, error: 'could not start session' };
     try {
       const res = await fetch('/api/highscore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ game: game, score: Math.floor(score), author: this.user, token: this.token })
+        body: JSON.stringify({ game: game, score: Math.floor(score), author: this.user, token: this.token, session: session })
       });
-      return await res.json();
+      const data = await res.json();
+      // Single-use session: drop it after submission
+      delete this._sessions[game];
+      return data;
     } catch(e) { return { ok: false, error: e.message }; }
   },
 

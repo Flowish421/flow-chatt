@@ -46,11 +46,18 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 MAX_BODY = 5 * 1024 * 1024  # 5MB max for image uploads
 MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024  # 2MB per image base64
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # Set for delete protection
-CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")  # Set to your domain in prod
-ADMIN_USER = os.environ.get("ADMIN_USER", "Flow")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "tnd421")
+CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "")  # Comma-separated allowed origins, empty = same-origin only
+CORS_ALLOWED = set(o.strip() for o in CORS_ORIGIN.split(",") if o.strip())
+ADMIN_USER = os.environ.get("ADMIN_USER", "")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
+if not ADMIN_USER or not ADMIN_PASS:
+    print("WARNING: ADMIN_USER and ADMIN_PASS env vars are required for admin panel access. Admin panel disabled.", file=sys.stderr)
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "onboarding@resend.com")
+
+# Server secret for signing highscore sessions etc. Persists per-process; set HIGHSCORE_SECRET to share across restarts.
+HIGHSCORE_SECRET = os.environ.get("HIGHSCORE_SECRET", "") or secrets.token_hex(32)
+HIGHSCORE_SESSION_TTL = 60 * 60  # 1 hour
 
 # --- AI Spawn Config ---
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -849,6 +856,72 @@ SPAWN_MAX_PER_HOUR = 60
 spawn_rate = {}  # username -> [timestamps]
 spawn_rate_lock = threading.Lock()
 
+# --- Login brute-force protection (per username) ---
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW = 15 * 60  # 15 minutes
+login_failures = {}  # username -> [timestamps]
+login_failures_lock = threading.Lock()
+
+
+def login_locked(username):
+    now_t = time.time()
+    with login_failures_lock:
+        if len(login_failures) > 5000:
+            cutoff = now_t - LOGIN_WINDOW
+            for k in [u for u, ts in login_failures.items() if not ts or ts[-1] < cutoff]:
+                del login_failures[k]
+        ts = [t for t in login_failures.get(username, []) if now_t - t < LOGIN_WINDOW]
+        login_failures[username] = ts
+        return len(ts) >= LOGIN_MAX_FAILURES
+
+
+def record_login_failure(username):
+    now_t = time.time()
+    with login_failures_lock:
+        ts = login_failures.get(username, [])
+        ts = [t for t in ts if now_t - t < LOGIN_WINDOW]
+        ts.append(now_t)
+        login_failures[username] = ts
+
+
+def clear_login_failures(username):
+    with login_failures_lock:
+        login_failures.pop(username, None)
+
+
+# --- Highscore session signing (anti-fraud) ---
+used_highscore_sessions = {}  # nonce -> ts
+used_hs_lock = threading.Lock()
+
+
+def sign_highscore_session(username, game, nonce, ts):
+    msg = f"{username}|{game}|{nonce}|{ts}".encode()
+    return hmac.new(HIGHSCORE_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+
+
+def verify_highscore_session(username, game, nonce, ts, sig):
+    """Returns (ok, reason). Verifies HMAC, TTL, and single-use."""
+    try:
+        ts = int(ts)
+    except (ValueError, TypeError):
+        return False, "bad ts"
+    now_t = int(time.time())
+    if now_t - ts > HIGHSCORE_SESSION_TTL or now_t < ts - 60:
+        return False, "session expired"
+    expected = sign_highscore_session(username, game, nonce, ts)
+    if not hmac.compare_digest(expected, sig):
+        return False, "bad signature"
+    with used_hs_lock:
+        # Drop expired entries
+        cutoff = now_t - HIGHSCORE_SESSION_TTL
+        if len(used_highscore_sessions) > 5000:
+            for k in [k for k, v in used_highscore_sessions.items() if v < cutoff]:
+                del used_highscore_sessions[k]
+        if nonce in used_highscore_sessions:
+            return False, "session already used"
+        used_highscore_sessions[nonce] = now_t
+    return True, ""
+
 
 def check_spawn_rate(username):
     """Returns (allowed, reason). Caps AI calls per user to prevent cost abuse."""
@@ -1309,12 +1382,19 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+            self.send_header("Access-Control-Allow-Origin", self.cors_origin())
             self.send_header("Content-Length", len(body))
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
+
+    def cors_origin(self):
+        """Echo back Origin header iff in allowlist, else empty (same-origin only)."""
+        origin = self.headers.get("Origin", "")
+        if origin and origin in CORS_ALLOWED:
+            return origin
+        return ""
 
     def real_ip(self):
         """Get real client IP with validation."""
@@ -1342,7 +1422,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             body = raw
             self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+        self.send_header("Access-Control-Allow-Origin", self.cors_origin())
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Content-Length", len(body))
@@ -1364,7 +1444,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' data:; connect-src 'self' ws: wss:;")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none';")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-XSS-Protection", "1; mode=block")
             self.end_headers()
@@ -1392,7 +1472,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+        self.send_header("Access-Control-Allow-Origin", self.cors_origin())
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.end_headers()
@@ -1739,7 +1819,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+            self.send_header("Access-Control-Allow-Origin", self.cors_origin())
             self.end_headers()
 
             q = Queue(maxsize=MAX_QUEUE_SIZE)
@@ -2478,6 +2558,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not uname:
                 self.send_json({"ok": False, "error": "Fyll i alla falt"}, 400)
                 return
+            if login_locked(uname):
+                self.send_json({"ok": False, "error": "For manga felaktiga forsok, vanta 15 min"}, 429)
+                return
             db = get_db()
             try:
                 row = db.execute(
@@ -2485,6 +2568,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     (uname,)
                 ).fetchone()
                 if not row:
+                    record_login_failure(uname)
                     self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
                     return
 
@@ -2497,9 +2581,11 @@ class ChatHandler(BaseHTTPRequestHandler):
                     if reset_row:
                         db.execute("UPDATE password_resets SET used = 1 WHERE id = ?", (reset_row["id"],))
                         db.commit()
+                        clear_login_failures(uname)
                         self.send_json({"ok": True, "username": row["username"], "token": row["token"], "must_change_password": True})
                         return
                     else:
+                        record_login_failure(uname)
                         self.send_json({"ok": False, "error": "Ogiltig aterstallningskod"}, 401)
                         return
 
@@ -2517,10 +2603,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                     if reset_row:
                         db.execute("UPDATE password_resets SET used = 1 WHERE id = ?", (reset_row["id"],))
                         db.commit()
+                        clear_login_failures(uname)
                         self.send_json({"ok": True, "username": row["username"], "token": row["token"], "must_change_password": True})
                         return
+                    record_login_failure(uname)
                     self.send_json({"ok": False, "error": "Felaktigt anvandarnamn eller losenord"}, 401)
                     return
+                clear_login_failures(uname)
                 self.send_json({"ok": True, "username": row["username"], "token": row["token"]})
             finally:
                 db.close()
@@ -2818,17 +2907,49 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(e)}, 500)
             return
 
-        # API: Submit highscore — POST /api/highscore { game, score, author, token }
-        if path == "/api/highscore" and method == "POST":
+        # API: Start highscore session — POST /api/highscore/start { game, author, token }
+        # Returns a signed session that must be presented when submitting a score.
+        if path == "/api/highscore/start" and method == "POST":
             game = body.get("game", "").strip()[:50]
-            score = body.get("score", 0)
             author = body.get("author", "").strip()[:20]
             token = body.get("token", "").strip()
             if not game or not author or not token:
                 self.send_json({"ok": False, "error": "missing fields"}, 400)
                 return
+            db = get_db()
+            try:
+                valid = db.execute("SELECT username FROM users WHERE username = ? AND token = ?", (author, token)).fetchone()
+            finally:
+                db.close()
+            if not valid:
+                self.send_json({"ok": False, "error": "invalid token"}, 401)
+                return
+            nonce = secrets.token_hex(16)
+            ts = int(time.time())
+            sig = sign_highscore_session(author, game, nonce, ts)
+            self.send_json({"ok": True, "session": {"nonce": nonce, "ts": ts, "sig": sig, "game": game}})
+            return
+
+        # API: Submit highscore — POST /api/highscore { game, score, author, token, session: {nonce, ts, sig} }
+        if path == "/api/highscore" and method == "POST":
+            game = body.get("game", "").strip()[:50]
+            score = body.get("score", 0)
+            author = body.get("author", "").strip()[:20]
+            token = body.get("token", "").strip()
+            session = body.get("session") or {}
+            if not game or not author or not token:
+                self.send_json({"ok": False, "error": "missing fields"}, 400)
+                return
             if not isinstance(score, int) or isinstance(score, bool) or score < 0 or score > 2_000_000_000:
                 self.send_json({"ok": False, "error": "invalid score"}, 400)
+                return
+            # Require signed session (anti-fraud). Reject if session game does not match the submitted game.
+            if not isinstance(session, dict) or session.get("game") != game:
+                self.send_json({"ok": False, "error": "session required — call /api/highscore/start first"}, 400)
+                return
+            ok, reason = verify_highscore_session(author, game, session.get("nonce", ""), session.get("ts", 0), session.get("sig", ""))
+            if not ok:
+                self.send_json({"ok": False, "error": f"session invalid: {reason}"}, 403)
                 return
             db = get_db()
             try:
@@ -3157,9 +3278,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if access is None or access in ("read", "locked", "system"):
                     self.send_json({"ok": False, "error": "du har inte tillgang till den har kanalen"}, 403)
                     return
-                # Leave any other voice channel first
+                # Atomic move: leave any other voice channel and join this one in a single transaction
+                if not USE_PG:
+                    db.execute("BEGIN IMMEDIATE")
                 db.execute("DELETE FROM voice_state WHERE username = ?", (author,))
-                # Join this one
                 db.execute("INSERT OR REPLACE INTO voice_state (channel, username, joined_at) VALUES (?, ?, ?)", (room_name, author, now()))
                 db.commit()
                 # Get current members
@@ -5011,8 +5133,10 @@ if __name__ == "__main__":
     # Startup warnings
     if not ADMIN_PASS:
         sys.stderr.write("WARNING: ADMIN_PASS not set — admin panel is disabled.\n")
-    if CORS_ORIGIN == "*":
-        sys.stderr.write("WARNING: CORS_ORIGIN is '*' — set to your domain in production.\n")
+    if not CORS_ALLOWED:
+        sys.stderr.write("INFO: CORS_ORIGIN empty — same-origin only (recommended for prod).\n")
+    else:
+        sys.stderr.write(f"INFO: CORS allowlist: {sorted(CORS_ALLOWED)}\n")
     if DB_PATH.startswith("/tmp") or DB_PATH.startswith("\\tmp"):
         sys.stderr.write(f"WARNING: DB_PATH is '{DB_PATH}' — data will be lost on restart in ephemeral environments.\n")
     if not RESEND_API_KEY:
