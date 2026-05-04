@@ -1142,9 +1142,14 @@ def call_ai(messages, ai_type="gameai"):
                 return data.get("content", [{}])[0].get("text", "")
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace")[:500]
+            err_body = re.sub(r"sk-[A-Za-z0-9_\-]{20,}", "sk-REDACTED", err_body)
             raise RuntimeError(f"Anthropic API {e.code}: {err_body}")
 
     elif OPENAI_API_KEY:
+        # Refuse if OPENAI_MODEL looks like an API key (common misconfig)
+        if OPENAI_MODEL.startswith(("sk-", "sk_")) or len(OPENAI_MODEL) > 80:
+            raise RuntimeError("Server misconfigured: OPENAI_MODEL appears to contain an API key, not a model name. Set OPENAI_MODEL to a model id (e.g. 'gpt-4o-mini').")
+
         # OpenAI-compatible API
         payload = json.dumps({
             "model": OPENAI_MODEL,
@@ -1167,7 +1172,10 @@ def call_ai(messages, ai_type="gameai"):
                 return data["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"OpenAI API {e.code} (model={OPENAI_MODEL}, base={OPENAI_BASE_URL}): {err_body}")
+            # Redact potential secrets that the server may have echoed back
+            err_body = re.sub(r"sk-[A-Za-z0-9_\-]{20,}", "sk-REDACTED", err_body)
+            safe_model = OPENAI_MODEL if not OPENAI_MODEL.startswith(("sk-", "sk_")) else "REDACTED"
+            raise RuntimeError(f"OpenAI API {e.code} (model={safe_model}): {err_body}")
 
     else:
         return "Ingen AI-nyckel konfigurerad. Satt OPENAI_API_KEY eller ANTHROPIC_API_KEY som environment variable."
