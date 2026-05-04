@@ -1582,7 +1582,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     db_h.execute("SELECT 1").fetchone()
                 finally:
                     db_h.close()
-                self.send_json({"ok": True})
+                # Report which backend is actually in use so we can diagnose silent fallback
+                db_type = "postgresql" if USE_PG else "sqlite"
+                pg_host = ""
+                if USE_PG and DATABASE_URL and "@" in DATABASE_URL:
+                    pg_host = DATABASE_URL.split("@")[-1].split("/")[0].split("?")[0]
+                self.send_json({"ok": True, "db": db_type, "pg_host": pg_host, "ephemeral": not USE_PG})
             except Exception as e:
                 self.send_json({"ok": False, "error": "db unreachable"}, 503)
             return
