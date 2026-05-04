@@ -2909,7 +2909,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         # API: Start highscore session — POST /api/highscore/start { game, author, token }
         # Returns a signed session that must be presented when submitting a score.
-        if path == "/api/highscore/start" and method == "POST":
+        if path == "/api/highscore/start":
             game = body.get("game", "").strip()[:50]
             author = body.get("author", "").strip()[:20]
             token = body.get("token", "").strip()
@@ -2931,7 +2931,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
 
         # API: Submit highscore — POST /api/highscore { game, score, author, token, session: {nonce, ts, sig} }
-        if path == "/api/highscore" and method == "POST":
+        if path == "/api/highscore":
             game = body.get("game", "").strip()[:50]
             score = body.get("score", 0)
             author = body.get("author", "").strip()[:20]
