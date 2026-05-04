@@ -466,6 +466,9 @@ class PgConnection:
     def __init__(self, dsn):
         self._conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=False)
 
+    def set_autocommit(self, value):
+        self._conn.autocommit = bool(value)
+
     def execute(self, sql, params=None):
         # Translate ? -> %s
         sql = sql.replace("?", "%s")
@@ -512,6 +515,10 @@ def init_db():
     if USE_PG:
         try:
             conn = PgConnection(DATABASE_URL)
+            # DDL in autocommit so a failed migration ALTER doesn't roll back
+            # the CREATE TABLE that came right before it (each statement is its
+            # own transaction). Re-enabled below before we exit init_db.
+            conn.set_autocommit(True)
         except Exception as e:
             sys.stderr.write(f"WARNING: PostgreSQL connection failed ({e}), falling back to SQLite\n")
             USE_PG = False
@@ -803,6 +810,10 @@ def init_db():
             (uuid.uuid4().hex, WELCOME_TEXT, now())
         )
     conn.commit()
+    # Restore transactional mode for any future use of this connection.
+    if USE_PG:
+        try: conn.set_autocommit(False)
+        except Exception: pass
     conn.close()
 
 
