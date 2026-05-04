@@ -57,7 +57,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 SPAWN_PROVIDER = os.environ.get("SPAWN_PROVIDER", "openai")  # "openai" or "anthropic"
 
 DISPOSABLE_DOMAINS = {
@@ -1136,9 +1136,13 @@ def call_ai(messages, ai_type="gameai"):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
-            return data.get("content", [{}])[0].get("text", "")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+                return data.get("content", [{}])[0].get("text", "")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Anthropic API {e.code}: {err_body}")
 
     elif OPENAI_API_KEY:
         # OpenAI-compatible API
@@ -1157,9 +1161,13 @@ def call_ai(messages, ai_type="gameai"):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
-            return data["choices"][0]["message"]["content"]
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+                return data["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"OpenAI API {e.code} (model={OPENAI_MODEL}, base={OPENAI_BASE_URL}): {err_body}")
 
     else:
         return "Ingen AI-nyckel konfigurerad. Satt OPENAI_API_KEY eller ANTHROPIC_API_KEY som environment variable."
@@ -1461,6 +1469,22 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_json({"ok": False, "error": "db unreachable"}, 503)
+            return
+
+        # API: AI provider config (admin only) — GET /api/ai-config
+        if path == "/api/ai-config":
+            if not check_admin(self.headers):
+                self.send_json({"ok": False, "error": "admin required"}, 403)
+                return
+            self.send_json({
+                "ok": True,
+                "provider": SPAWN_PROVIDER,
+                "openai_key_set": bool(OPENAI_API_KEY),
+                "openai_model": OPENAI_MODEL,
+                "openai_base": OPENAI_BASE_URL,
+                "anthropic_key_set": bool(ANTHROPIC_API_KEY),
+                "anthropic_model": ANTHROPIC_MODEL,
+            })
             return
 
         # API: Get highscores — GET /api/highscores?game=xxx
