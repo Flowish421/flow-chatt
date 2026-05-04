@@ -843,6 +843,32 @@ email_rate_lock = threading.Lock()
 ip_email_rate = {}  # ip -> [timestamps] for hourly cap
 ip_email_rate_lock = threading.Lock()
 
+# --- Per-user AI spawn rate limiting (cost guard) ---
+SPAWN_MAX_PER_MIN = 10
+SPAWN_MAX_PER_HOUR = 60
+spawn_rate = {}  # username -> [timestamps]
+spawn_rate_lock = threading.Lock()
+
+
+def check_spawn_rate(username):
+    """Returns (allowed, reason). Caps AI calls per user to prevent cost abuse."""
+    now_t = time.time()
+    with spawn_rate_lock:
+        if len(spawn_rate) > 5000:
+            cutoff = now_t - 3600
+            for k in [u for u, ts in spawn_rate.items() if not ts or ts[-1] < cutoff]:
+                del spawn_rate[k]
+        ts = spawn_rate.get(username, [])
+        ts = [t for t in ts if now_t - t < 3600]
+        last_min = sum(1 for t in ts if now_t - t < 60)
+        if last_min >= SPAWN_MAX_PER_MIN:
+            return False, f"AI rate limit: max {SPAWN_MAX_PER_MIN}/minut"
+        if len(ts) >= SPAWN_MAX_PER_HOUR:
+            return False, f"AI rate limit: max {SPAWN_MAX_PER_HOUR}/timme"
+        ts.append(now_t)
+        spawn_rate[username] = ts
+        return True, ""
+
 
 def is_disposable_email(email):
     domain = email.rsplit("@", 1)[-1].lower()
@@ -2755,10 +2781,34 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "invalid token"}, 401)
                 return
 
+            # Per-user AI rate limit (cost guard)
+            ok, reason = check_spawn_rate(author)
+            if not ok:
+                self.send_json({"ok": False, "error": reason}, 429)
+                return
+
             ai_type = body.get("ai_type", "gameai")
             messages = body.get("messages", [])
             if not messages or not isinstance(messages, list):
                 self.send_json({"ok": False, "error": "no messages"}, 400)
+                return
+            if len(messages) > 50:
+                self.send_json({"ok": False, "error": "too many messages (max 50)"}, 400)
+                return
+            # Validate each message and cap total payload
+            total = 0
+            for m in messages:
+                if not isinstance(m, dict):
+                    self.send_json({"ok": False, "error": "invalid message format"}, 400)
+                    return
+                role = m.get("role")
+                content = m.get("content")
+                if role not in ("system", "user", "assistant") or not isinstance(content, str):
+                    self.send_json({"ok": False, "error": "invalid message format"}, 400)
+                    return
+                total += len(content)
+            if total > 100_000:
+                self.send_json({"ok": False, "error": "messages too long (max 100KB)"}, 400)
                 return
 
             try:
@@ -2777,7 +2827,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not game or not author or not token:
                 self.send_json({"ok": False, "error": "missing fields"}, 400)
                 return
-            if not isinstance(score, int) or score < 0:
+            if not isinstance(score, int) or isinstance(score, bool) or score < 0 or score > 2_000_000_000:
                 self.send_json({"ok": False, "error": "invalid score"}, 400)
                 return
             db = get_db()
