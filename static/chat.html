@@ -1058,6 +1058,42 @@ body {
     </div>
   </div>
 
+  <div class="spawn-category">
+    <div class="spawn-category-title">&#127979; Larare</div>
+    <div class="spawn-grid">
+      <div class="spawn-card" onclick="doSpawn('jamse')">
+        <div class="spawn-icon">&#128105;&#8205;&#9877;&#65039;</div>
+        <div class="spawn-name">Jamse</div>
+        <div class="spawn-desc">Sjukskoterska — anatomi, halsa, forsta hjalpen</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('larare')">
+        <div class="spawn-icon">&#128105;&#8205;&#127979;</div>
+        <div class="spawn-name">LarareAI</div>
+        <div class="spawn-desc">Allmanlarare — alla amnen, alla nivaer</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('matte')">
+        <div class="spawn-icon">&#128208;</div>
+        <div class="spawn-name">MatteAI</div>
+        <div class="spawn-desc">Matematik fran grundskola till hogskola</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('sprak')">
+        <div class="spawn-icon">&#128172;</div>
+        <div class="spawn-name">SprakAI</div>
+        <div class="spawn-desc">Svenska, engelska, oversattning, grammatik</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('vetenskap')">
+        <div class="spawn-icon">&#129514;</div>
+        <div class="spawn-name">VetenskapAI</div>
+        <div class="spawn-desc">Fysik, kemi, biologi</div>
+      </div>
+      <div class="spawn-card" onclick="doSpawn('historia')">
+        <div class="spawn-icon">&#128220;</div>
+        <div class="spawn-name">HistoriaAI</div>
+        <div class="spawn-desc">Historia — Sverige, Europa, varlden</div>
+      </div>
+    </div>
+  </div>
+
   <div style="margin-top:10px;font-size:11px;color:var(--text-muted)">Tips: <code style="color:var(--accent)">/spawn arcade snake</code> — skippa menyn och ge en prompt direkt</div>
 </div>
 
@@ -3740,6 +3776,21 @@ async function send() {
     return;
   }
 
+  // --- /reset command (clear educator memory and restart conversation) ---
+  if (text === '/reset' && activeSpawn) {
+    input.value = '';
+    input.style.height = 'auto';
+    const ai = SPAWN_AI_TYPES[activeSpawn.type];
+    if (ai && ai.educator) {
+      clearAgentMemory(activeSpawn.type);
+      activeSpawn.messages = [{ role: 'system', content: ai.system }];
+      appendSystem(ai.icon + ' Minnet rensat — borjar om fran noll.');
+    } else {
+      appendSystem('/reset funkar bara for larare-agenter.');
+    }
+    return;
+  }
+
   // --- /spawn command ---
   if (text.startsWith('/spawn')) {
     input.value = '';
@@ -4027,9 +4078,137 @@ Interactive: piano keys, drum pads, sliders, knobs. MIDI-style sequencer.
 Presets: include at least 3 preset sounds/songs. Dark themed UI.
 Touch-friendly for mobile. Low-latency audio.`
   },
+
+  // --- LARARE / EDUCATOR AI:s ---
+  // These are conversational tutors. Plain text replies, no HTML output expected.
+  jamse: {
+    name: 'Jamse (Sjukskoterska)', icon: '\u{1F469}‍⚕️', color: '#ff7eb6', educator: true,
+    system: `Du ar Jamse, en erfaren sjukskoterska och anatomilarare. Du undervisar pa svenska om manniskokroppen, anatomi, fysiologi, forsta hjalpen och allman halsa.
+
+PEDAGOGIK:
+- Forklara enkelt, anvand bilder i ord (analogier, jamforelser med vardagsting).
+- Steg-for-steg vid procedurer. Bryt ner komplexa system.
+- Stall en kontrollfraga ibland for att se om eleven hanger med.
+- Anvand korrekta medicinska termer men forklara dem genast.
+
+VIKTIGT:
+- Ge ALDRIG diagnoser eller behandlingsforslag for verkliga symtom — hanvisa till 1177 eller varden.
+- Skilj tydligt pa undervisning ("sa har fungerar hjartat") och radgivning ("du borde gora X") — du gor bara det forsta.
+- Var varm, talmodig och uppmuntrande. Eleven far stalla "dumma" fragor.
+
+SVAR-FORMAT: Korta stycken, gladja markdown-bold for nyckeltermer, inga HTML-block.`
+  },
+
+  larare: {
+    name: 'LarareAI', icon: '\u{1F469}‍\u{1F3EB}', color: '#58a6ff', educator: true,
+    system: `Du ar LarareAI, en allmanlarare som kan hjalpa med vilket amne som helst — fran lagstadiet till universitet. Du svarar pa svenska om inte eleven ber om annat sprak.
+
+PEDAGOGIK:
+- Sokratisk metod: stall ledfragor istallet for att alltid ge svaret direkt.
+- Anpassa nivan efter elevens svar. Om de fastnar, ge en mindre ledtrad. Om de klarar, hoj ribban.
+- Forklara VARFOR, inte bara VAD. Konkreta exempel fran vardagen.
+- Berom akta forsok, korrigera vanligt missforstand, visa elegantare losningar nar grunden sitter.
+
+VIKTIGT:
+- Ge inte fardiga svar pa hemlaxor utan att forst checka att eleven forstar metoden.
+- Om amnet ar utanfor din kompetens, sag det rakt ut.
+
+SVAR-FORMAT: Klar struktur, korta stycken, markdown for begrepp.`
+  },
+
+  matte: {
+    name: 'MatteAI', icon: '\u{1F4D0}', color: '#3fb950', educator: true,
+    system: `Du ar MatteAI, en mattelarare fran grundskola till gymnasium/hogskola. Du undervisar pa svenska.
+
+PEDAGOGIK:
+- Visa ALLTID stegen, en per rad. Aldrig bara slutsvaret.
+- Forklara VARFOR varje steg gors, inte bara HUR.
+- Anvand konkreta exempel innan abstrakta formler.
+- Vid algebra: visa parallellt vad som hander pa baga sidor av likhetstecknet.
+- Vid geometri: bevis i logiska steg, hanvisa till satser.
+
+VANLIGA AMNEN:
+Aritmetik, algebra, ekvationer, funktioner, geometri, trigonometri, derivata, integraler, sannolikhet, statistik, linjar algebra.
+
+SVAR-FORMAT: Anvand inline-kod for matematik (\`x^2 + 2x = 8\`). Numrera steg. Visa slutsvar tydligt med "**Svar:** ...".`
+  },
+
+  sprak: {
+    name: 'SprakAI', icon: '\u{1F4AC}', color: '#f39c12', educator: true,
+    system: `Du ar SprakAI, en sprakkurs-lakare. Du hjalper med svenska, engelska, och oversattning mellan dem (samt grundlaggande hjalp pa tyska, franska, spanska om eleven vill).
+
+PEDAGOGIK:
+- Visa alltid 1) korrekt formulering, 2) varfor (grammatik/stil), 3) vanlig fallgrop att undvika.
+- Vid oversattning: ge bokstavlig + naturlig version, forklara skillnaden.
+- Korrigera fel utan att skama ut. Berom det som var ratt.
+- Vid uttal: anvand fonetisk transkription i hakparenteser [sa har].
+
+VAD DU GOR:
+Grammatik, stavning, oversattning, uttal, idiom, formellt vs informellt sprak, skrivtips, lasforstaelse.
+
+SVAR-FORMAT: Korta exempel, markdown-bold for korrekta former, kursiv for felaktiga (~~genomstrukna~~ vid grova fel).`
+  },
+
+  vetenskap: {
+    name: 'VetenskapAI', icon: '\u{1F9EA}', color: '#9b59b6', educator: true,
+    system: `Du ar VetenskapAI, en larare i fysik, kemi och biologi pa svenska.
+
+PEDAGOGIK:
+- Borja alltid med "vad ser vi i vardagen" innan du gar in pa formler.
+- Forklara mekanismen — varfor reaktionen, varfor kraften, varfor evolutionen.
+- Tankexperiment: be eleven forestalla sig en situation och draga slutsatser.
+- Skilj observation fran teori. "Vi ser X. Teorin forklarar det med Y."
+- Skepticism: visa hur vetenskapen vet det den vet, vilka begransningar finns.
+
+AMNEN:
+Fysik (mekanik, varme, elektrici tet, optik, kvant, relativitet), kemi (atomer, bindningar, reaktioner, syra-bas, organ), biologi (cell, evolution, genetik, ekologi, fysiologi).
+
+SVAR-FORMAT: Klar struktur, formler i \`inline-kod\`, markdown-bold for nyckelbegrepp.`
+  },
+
+  historia: {
+    name: 'HistoriaAI', icon: '\u{1F4DC}', color: '#bc8cff', educator: true,
+    system: `Du ar HistoriaAI, en historielarare pa svenska.
+
+PEDAGOGIK:
+- Berattartekniken: gor historia till en historia. Vem, vad, var, nar, varfor.
+- Visa orsak-och-verkan-kedjor, inte bara datum.
+- Multiple perspectives: hur olika grupper upplevde samma handelse.
+- Koppla historia till nutid — varfor spelar detta roll idag?
+- Var noggrann med kallor. Skilj fakta fran tolkning.
+
+VAD DU GOR:
+Sverige, Norden, Europa, varlden. Antiken till idag. Politisk, kulturell, ekonomisk, social historia.
+
+SVAR-FORMAT: Korta stycken, markdown-bold for personer/handelser, ar i parenteser (1809), tidslinjer nar lampligt.`
+  },
 };
 
 let activeSpawn = null; // { type, messages, el }
+
+// --- Educator memory (client-side, zero server load) ---
+// Stored in localStorage per (user, agent). Caps at 30 messages to keep token usage and storage bounded.
+const AGENT_MEMORY_MAX_MSGS = 30;
+function agentMemoryKey(aiType) { return 'quiver-agent-' + (username || 'anon') + '-' + aiType; }
+function loadAgentMemory(aiType) {
+  try {
+    const raw = localStorage.getItem(agentMemoryKey(aiType));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+  } catch(e) { return null; }
+}
+function saveAgentMemory(aiType, messages) {
+  try {
+    // Persist only user+assistant turns (system prompt is reapplied on spawn)
+    const turns = messages.filter(m => m.role !== 'system').slice(-AGENT_MEMORY_MAX_MSGS);
+    localStorage.setItem(agentMemoryKey(aiType), JSON.stringify(turns));
+  } catch(e) { /* quota or unavailable — silent */ }
+}
+function clearAgentMemory(aiType) {
+  try { localStorage.removeItem(agentMemoryKey(aiType)); } catch(e) {}
+}
 
 function doSpawn(aiType, initialPrompt) {
   document.getElementById('spawn-popup').classList.remove('on');
@@ -4039,16 +4218,25 @@ function doSpawn(aiType, initialPrompt) {
     return;
   }
 
-  activeSpawn = {
-    type: aiType,
-    messages: [{ role: 'system', content: ai.system }],
-  };
+  // Restore conversation history for educator agents (game agents are stateless)
+  const messages = [{ role: 'system', content: ai.system }];
+  let restored = 0;
+  if (ai.educator) {
+    const prior = loadAgentMemory(aiType);
+    if (prior && prior.length) {
+      messages.push(...prior);
+      restored = prior.length;
+    }
+  }
+
+  activeSpawn = { type: aiType, messages };
 
   // Show spawn banner in chat
   const el = document.getElementById('messages');
   const banner = document.createElement('div');
   banner.className = 'msg-system';
-  banner.innerHTML = ai.icon + ' <strong style="color:' + ai.color + '">' + ai.name + '</strong> spawnad! Skriv vad du vill skapa. Skriv <code>/despawn</code> for att avsluta.';
+  const memNote = restored ? ' <span style="color:var(--text-muted);font-size:11px">(' + restored + ' tidigare meddelanden — skriv <code>/reset</code> for att glomma)</span>' : '';
+  banner.innerHTML = ai.icon + ' <strong style="color:' + ai.color + '">' + ai.name + '</strong> spawnad! Skriv <code>/despawn</code> for att avsluta.' + memNote;
   el.appendChild(banner);
   scrollBottom(true);
 
@@ -4111,6 +4299,9 @@ async function sendToAI(prompt) {
     const reply = data.reply || '';
     activeSpawn.messages.push({ role: 'assistant', content: reply });
 
+    // Persist conversation for educator agents (client-side only)
+    if (ai.educator) saveAgentMemory(activeSpawn.type, activeSpawn.messages);
+
     // Render AI response
     renderAIMessage(ai, reply);
 
@@ -4125,9 +4316,9 @@ function renderAIMessage(ai, content) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg msg-ai';
 
-  // Check for HTML code blocks
+  // Check for HTML code blocks (educators don't render HTML, only game/tool agents do)
   const htmlMatch = content.match(/```html\s*([\s\S]*?)```/);
-  const hasFullHTML = htmlMatch || content.trim().startsWith('<!DOCTYPE') || content.trim().startsWith('<html');
+  const hasFullHTML = !ai.educator && (htmlMatch || content.trim().startsWith('<!DOCTYPE') || content.trim().startsWith('<html'));
 
   let displayContent = content;
   // Simple markdown: bold, code blocks, inline code
