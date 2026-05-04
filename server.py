@@ -1023,10 +1023,10 @@ def touch_online(username, ip="", channel=""):
 
 
 def get_online(timeout=120):
-    """Users seen in last 2 minutes."""
+    """Users seen in last 2 minutes. Excludes the 'anonymous' bucket — pre-auth tabs and sockets shouldn't count."""
     now_t = time.time()
     with online_lock:
-        return {u: info for u, info in online_users.items() if now_t - info["last_seen"] < timeout}
+        return {u: info for u, info in online_users.items() if u != "anonymous" and now_t - info["last_seen"] < timeout}
 
 
 # --- Admin sessions ---
@@ -1546,7 +1546,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                     ws_user = "anonymous"
             elif ws_user != "anonymous":
                 ws_user = "anonymous"  # No token provided — demote to anonymous
-            touch_online(ws_user, client_ip, "ws")
+            # Don't pollute the online list with anonymous browser tabs that haven't authenticated yet
+            if ws_user != "anonymous":
+                touch_online(ws_user, client_ip, "ws")
 
             ws_conn = WebSocketConnection(self, ws_user, client_ip)
             with ws_lock:
@@ -1824,7 +1826,8 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             q = Queue(maxsize=MAX_QUEUE_SIZE)
             connected_at = time.time()
-            touch_online(sse_user, client_ip, "connected")
+            if sse_user != "anonymous":
+                touch_online(sse_user, client_ip, "connected")
             with sse_lock:
                 sse_clients.append((q, None, sse_user, client_ip, connected_at))
 
